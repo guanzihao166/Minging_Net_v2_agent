@@ -20,8 +20,9 @@ if not keypath.exists():
 else: private=serialization.load_pem_private_key(keypath.read_bytes(),password=None)
 public=private.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo)
 pin=root/'deploy/release-signing.pub'
-if pin.exists() and pin.read_bytes().replace(b'\r\n',b'\n')!=public:raise SystemExit('Signing key differs from the pinned release key')
-pin.write_bytes(public)
+if pin.exists():
+ if pin.read_bytes().replace(b'\r\n',b'\n')!=public:raise SystemExit('Signing key differs from the pinned release key')
+else:pin.write_bytes(public)
 output=Path(args.output).resolve();output.mkdir(parents=True,exist_ok=True)
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
 dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip())
