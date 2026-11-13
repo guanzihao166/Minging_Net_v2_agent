@@ -1,0 +1,85 @@
+name: Agent checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -tags with_gvisor ./...
+      - run: go vet -tags with_gvisor ./...
+      - run: go mod verify
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck -tags with_gvisor ./...
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_gvisor -trimpath -o /tmp/minging-agent-amd64 ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags with_gvisor -trimpath -o /tmp/minging-agent-arm64 ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -tags with_gvisor -c -o /tmp/engine.test ./internal/engine
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-runtime
+          path: |
+            /tmp/minging-agent-amd64
+            /tmp/engine.test
+  distributions:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:12-slim', 'quay.io/centos/centos:stream9', 'alpine:3.21']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-runtime
+          path: .local/runtime
+      - name: Static binary, configuration and seven protocol runtime
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          chmod 755 .local/runtime/*
+          docker run --rm --memory=384m --pids-limit=512 -e GOMEMLIMIT=160MiB -v "$PWD:/workspace:ro" "$IMAGE" sh -ec '
+            /workspace/.local/runtime/minging-agent-amd64 --version
+            sh -n /workspace/deploy/install.sh
+            /workspace/.local/runtime/engine.test -test.run "TestSevenProtocolTCPUDP|TestApply" -test.v
+          '
+      - name: OpenRC supervisor start and graceful stop
+        if: matrix.image == 'alpine:3.21'
+        run: |
+          docker run --rm --memory=384m --pids-limit=512 -v "$PWD:/workspace:ro" alpine:3.21 sh /workspace/scripts/test_openrc.sh
+  installation:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:12-slim', 'quay.io/centos/centos:stream9', 'alpine:3.21']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-runtime
+          path: .local/runtime
+      - name: Complete signed installation and failed-upgrade rollback
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          chmod 755 .local/runtime/*
+          if [ "$IMAGE" = alpine:3.21 ]; then
+            docker run --rm --memory=384m --pids-limit=512 -v "$PWD:/workspace:ro" "$IMAGE" sh -ec 'apk add --no-cache openrc python3 ca-certificates curl openssl tar gzip coreutils; sh /workspace/scripts/test_installer.sh'
+          else
+            case "$IMAGE" in
+              ubuntu:*|debian:*) packages='apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y systemd systemd-sysv python3 ca-certificates curl openssl tar gzip coreutils' ;;
+              *) packages='dnf install -y systemd python3 ca-certificates openssl tar gzip' ;;
+            esac
+            printf 'FROM %s\nENV container=docker\nRUN %s\nCMD ["/sbin/init"]\n' "$IMAGE" "$packages" > /tmp/installer.Dockerfile
+            docker build -t mnet-installer-ci -f /tmp/installer.Dockerfile /tmp
+            docker run -d --name mnet-installer-ci --privileged --cgroupns=host --tmpfs /run --tmpfs /tmp -v /sys/fs/cgroup:/sys/fs/cgroup:rw -v "$PWD:/workspace:ro" mnet-installer-ci
+            trap 'docker logs --tail 60 mnet-installer-ci; docker rm -f mnet-installer-ci' EXIT
+            sleep 5
+            docker exec mnet-installer-ci sh /workspace/scripts/test_installer.sh
+          fi

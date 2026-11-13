@@ -1,0 +1,33 @@
+[Unit]
+Description=Minging Net v2 node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=minging-agent
+Group=minging-agent
+UMask=0077
+ExecStart=/opt/minging-agent/current/minging-agent --config /etc/minging-agent/agent.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Environment=GOMEMLIMIT=160MiB
+Environment=GOGC=80
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/minging-agent
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LimitNOFILE=65536
+TasksMax=256
+MemoryMax=240M
+
+[Install]
+WantedBy=multi-user.target
