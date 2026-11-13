@@ -1,0 +1,16 @@
+name: Agent checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -tags with_gvisor ./...
+      - run: go vet -tags with_gvisor ./...
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_gvisor -trimpath -o /tmp/minging-agent-amd64 ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags with_gvisor -trimpath -o /tmp/minging-agent-arm64 ./cmd/agent
