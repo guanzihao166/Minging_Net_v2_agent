@@ -85,6 +85,8 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 		inbound["tls"] = map[string]any{"enabled": true, "server_name": in.Config.ServerName, "certificate": []string{cert}, "key": []string{key}}
 		if len(in.Config.ALPN) > 0 {
 			inbound["tls"].(map[string]any)["alpn"] = in.Config.ALPN
+		} else if in.Protocol == "tuic5" {
+			inbound["tls"].(map[string]any)["alpn"] = []string{"h3"}
 		}
 	}
 	if in.Config.Transport == "ws" {

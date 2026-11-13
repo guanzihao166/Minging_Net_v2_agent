@@ -156,6 +156,11 @@ func clientBox(t *testing.T, in wire.Inbound, publicHost ...string) *box.Box {
 	}
 	if in.Config.TLS {
 		ob["tls"] = map[string]any{"enabled": true, "server_name": in.Config.ServerName, "insecure": insecure}
+		if len(in.Config.ALPN) > 0 {
+			ob["tls"].(map[string]any)["alpn"] = in.Config.ALPN
+		} else if in.Protocol == "tuic5" {
+			ob["tls"].(map[string]any)["alpn"] = []string{"h3"}
+		}
 	}
 	config := map[string]any{"log": map[string]any{"level": "error"}, "outbounds": []any{ob}, "route": map[string]any{"final": "proxy"}}
 	if in.Protocol == "wireguard" {
