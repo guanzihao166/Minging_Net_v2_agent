@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+name="Minging Net v2 agent"
+description="Metered network node with signed controller configuration"
+supervisor="supervise-daemon"
+command="/opt/minging-agent/current/minging-agent"
+command_args="--config /etc/minging-agent/agent.json"
+command_user="minging-agent:minging-agent"
+pidfile="/run/minging-agent.pid"
+umask=0077
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+retry="TERM/30/KILL/5"
+export GOMEMLIMIT=160MiB
+export GOGC=80
+output_logger="logger -t minging-agent"
+error_logger="logger -t minging-agent"
+depend() { need net; after firewall; }

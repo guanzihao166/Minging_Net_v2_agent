@@ -314,6 +314,8 @@ func (d *Daemon) report(ctx context.Context) {
 	if e = d.client.DoRaw(job, "POST", "/api/agent/report", raw, nil); e == nil {
 		if e = d.store.AckReport(raw); e != nil {
 			d.error("计量确认写入失败")
+		} else if e = d.writeStatus(report.Healthy); e != nil {
+			d.error("健康状态写入失败")
 		}
 	}
 }

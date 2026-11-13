@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,14 @@ func (c *Config) Validate() error {
 	}
 	if c.TLSDirectory == "" {
 		c.TLSDirectory = "/etc/minging-agent/tls"
+	}
+	_, port, err := net.SplitHostPort(c.Listen)
+	n, parseErr := strconv.Atoi(port)
+	if err != nil || parseErr != nil || n < 1024 || n > 65535 {
+		return errors.New("management listener requires an unprivileged TCP port")
+	}
+	if !filepath.IsAbs(c.StateDirectory) || !filepath.IsAbs(c.TLSDirectory) {
+		return errors.New("agent directories must be absolute")
 	}
 	return nil
 }
