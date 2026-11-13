@@ -106,7 +106,7 @@ func fixtureInbound(t *testing.T, protocol string) wire.Inbound {
 	credential := wire.Credential{UUID: "00c3cf1b-80f0-477c-bb0d-a051ee220191", Password: "fixture-password-long-enough-1234567890", SSKey: base64.StdEncoding.EncodeToString([]byte("1234567890abcdef")), PrivateKey: cpriv, PublicKey: cpub, Address: "10.0.0.2"}
 	return wire.Inbound{ID: 1, Protocol: protocol, ListenHost: "127.0.0.1", Port: port, Config: wire.ClientConfig{TLS: protocol != "ss2022" && protocol != "wireguard", ServerName: "localhost", Method: "2022-blake3-aes-128-gcm", ServerKey: base64.StdEncoding.EncodeToString([]byte("fedcba0987654321")), WGPublicKey: pub, MTU: 1408}, Secrets: wire.Secrets{Certificate: cert, PrivateKey: key, WGPrivateKey: priv}, Users: []wire.User{{ID: 1, Epoch: 1, ExpiresAt: time.Now().Add(time.Hour), SpeedMbps: 100, MaxConnections: 10, Credential: credential}}}
 }
-func clientBox(t *testing.T, in wire.Inbound) *box.Box {
+func clientBox(t *testing.T, in wire.Inbound, publicHost ...string) *box.Box {
 	t.Helper()
 	ir := inbound.NewRegistry()
 	or := outbound.NewRegistry()
@@ -123,7 +123,13 @@ func clientBox(t *testing.T, in wire.Inbound) *box.Box {
 	local.RegisterTransport(dr)
 	ctx := box.Context(context.Background(), ir, or, er, dr, bs.NewRegistry(), certificate.NewRegistry())
 	c := in.Users[0].Credential
-	ob := map[string]any{"tag": "proxy", "server": "127.0.0.1", "server_port": in.Port}
+	server := "127.0.0.1"
+	insecure := true
+	if len(publicHost) > 0 {
+		server = publicHost[0]
+		insecure = false
+	}
+	ob := map[string]any{"tag": "proxy", "server": server, "server_port": in.Port}
 	switch in.Protocol {
 	case "vless", "vmess":
 		ob["type"] = in.Protocol
@@ -149,12 +155,12 @@ func clientBox(t *testing.T, in wire.Inbound) *box.Box {
 	case "wireguard":
 	}
 	if in.Config.TLS {
-		ob["tls"] = map[string]any{"enabled": true, "server_name": "localhost", "insecure": true}
+		ob["tls"] = map[string]any{"enabled": true, "server_name": in.Config.ServerName, "insecure": insecure}
 	}
 	config := map[string]any{"log": map[string]any{"level": "error"}, "outbounds": []any{ob}, "route": map[string]any{"final": "proxy"}}
 	if in.Protocol == "wireguard" {
 		delete(config, "outbounds")
-		config["endpoints"] = []any{map[string]any{"type": "wireguard", "tag": "proxy", "system": false, "address": []string{c.Address + "/32"}, "private_key": c.PrivateKey, "peers": []any{map[string]any{"address": "127.0.0.1", "port": in.Port, "public_key": in.Config.WGPublicKey, "allowed_ips": []string{"0.0.0.0/0"}}}, "mtu": 1408, "workers": 2}}
+		config["endpoints"] = []any{map[string]any{"type": "wireguard", "tag": "proxy", "system": false, "address": []string{c.Address + "/32"}, "private_key": c.PrivateKey, "peers": []any{map[string]any{"address": server, "port": in.Port, "public_key": in.Config.WGPublicKey, "allowed_ips": []string{"0.0.0.0/0"}}}, "mtu": 1408, "workers": 2}}
 	}
 	raw, _ := json.Marshal(config)
 	options, e := sj.UnmarshalExtendedContext[option.Options](ctx, raw)

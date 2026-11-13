@@ -32,21 +32,21 @@ def archive(path,items):
   for name,data,mode in sorted(items):
    info=tarfile.TarInfo(name);info.size=len(data);info.mode=mode;info.mtime=stamp;info.uid=info.gid=0
    bundle.addfile(info,io.BytesIO(data))
+subprocess.run(['go','mod','vendor'],cwd=root,check=True)
 for arch in ['amd64','arm64']:
  binary=root/'.local/bin'/('minging-agent-'+arch)
  binary.parent.mkdir(parents=True,exist_ok=True)
- subprocess.run(['go','build','-tags','with_gvisor','-trimpath','-ldflags','-s -w -X main.version='+version,'-o',str(binary),'./cmd/agent'],cwd=root,env={**os.environ,'GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0'},check=True)
+ subprocess.run(['go','build','-mod=vendor','-buildvcs=false','-tags','with_gvisor','-trimpath','-ldflags','-s -w -X main.version='+version,'-o',str(binary),'./cmd/agent'],cwd=root,env={**os.environ,'GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0'},check=True)
  items=[('minging-agent',binary.read_bytes(),0o755),('LICENSE',(root/'LICENSE').read_bytes(),0o644),('README.md',(root/'README.md').read_bytes(),0o644)]
  for name in ['minging-agent.service','minging-agent.openrc']:items.append((name,(root/'deploy'/name).read_bytes().replace(b'\r\n',b'\n'),0o644))
  archive(output/('minging-agent-linux-'+arch+'.tar.gz'),items)
-subprocess.run(['go','mod','vendor'],cwd=root,check=True)
 source=[]
 for folder in ['cmd','internal','deploy','scripts','vendor']:
  for path in (root/folder).rglob('*'):
-  if path.is_file() and '__pycache__' not in path.parts and not path.name.endswith(('.key','.pem','.db')):
+  if path.is_file() and '__pycache__' not in path.parts and (folder=='vendor' or not path.name.endswith(('.key','.pem','.db'))):
    source.append((path.relative_to(root).as_posix(),path.read_bytes(),0o755 if path.suffix in ['.sh','.openrc'] else 0o644))
 for name in ['go.mod','go.sum','LICENSE','README.md']:source.append((name,(root/name).read_bytes(),0o644))
-source.append(('RELEASE.json',json.dumps({'version':version,'commit':commit,'dirty':dirty,'build':'CGO_ENABLED=0 go build -mod=vendor -tags with_gvisor ./cmd/agent'},indent=2).encode(),0o644))
+source.append(('RELEASE.json',json.dumps({'version':version,'commit':commit,'dirty':dirty,'go':subprocess.check_output(['go','version'],text=True).strip(),'build':'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -buildvcs=false -tags with_gvisor -trimpath -ldflags "-s -w -X main.version='+version+'" -o minging-agent ./cmd/agent'},indent=2).encode(),0o644))
 archive(output/'minging-agent-source.tar.gz',source)
 checksums=''.join(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n' for path in sorted(output.glob('minging-agent-*.tar.gz'))).encode()
 (output/'SHA256SUMS').write_bytes(checksums)
