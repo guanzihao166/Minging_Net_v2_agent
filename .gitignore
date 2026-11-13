@@ -1,0 +1,10 @@
+.local/
+bin/
+dist/
+*.key
+*.pem
+*.db
+*.log
+agent.json
+state.json
+__pycache__/
