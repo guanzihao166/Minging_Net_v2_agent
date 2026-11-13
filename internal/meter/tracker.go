@@ -354,9 +354,13 @@ type meteredConn struct {
 	writeDeadline time.Time
 	readMu        sync.Mutex
 	cached        []byte
+	readError     error
 }
 
 func (c *meteredConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	if !c.f.tracker.begin() {
 		return 0, net.ErrClosed
 	}
@@ -371,6 +375,9 @@ func (c *meteredConn) Read(p []byte) (int, error) {
 	if len(c.cached) > 0 {
 		n = copy(p, c.cached)
 		c.cached = c.cached[n:]
+		if len(c.cached) == 0 {
+			e, c.readError = c.readError, nil
+		}
 	} else {
 		n, e = c.Conn.Read(p)
 	}
@@ -382,7 +389,19 @@ func (c *meteredConn) Read(p []byte) (int, error) {
 		c.f.close()
 		return 0, err
 	}
-	n = min(n, int(g.Bytes))
+	if granted := int(g.Bytes); granted < n {
+		// A partial quota grant must not discard bytes already read from TCP.
+		// Retain them in stream order, including a deferred EOF, until a later
+		// grant permits forwarding or the quota closes this connection.
+		pending := make([]byte, n-granted+len(c.cached))
+		copy(pending, p[granted:n])
+		copy(pending[n-granted:], c.cached)
+		c.cached = pending
+		if e != nil {
+			c.readError, e = e, nil
+		}
+		n = granted
+	}
 	if err = c.f.settle(g, int64(n), 0); err != nil {
 		return 0, err
 	}
