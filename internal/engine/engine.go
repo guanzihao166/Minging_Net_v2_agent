@@ -77,11 +77,6 @@ func (e *Engine) Apply(s wire.Snapshot) error {
 		}
 		b, err := e.make(raw)
 		if err != nil {
-			for id, c := range candidate {
-				if old, ok := e.instances[id]; !ok || old.box != c.box {
-					c.box.Close()
-				}
-			}
 			return fmt.Errorf("inbound %d validation failed: %w", in.ID, err)
 		}
 		candidate[in.ID] = instance{b, raw}
@@ -116,6 +111,7 @@ func (e *Engine) Apply(s wire.Snapshot) error {
 				next.box.Close()
 			}
 		}
+		candidate = map[int64]instance{} // already closed above; avoid double close during rollback
 		for id, old := range changed {
 			restored, err := e.make(old.raw)
 			if err != nil {

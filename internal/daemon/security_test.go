@@ -89,3 +89,33 @@ func TestCrashRecoveryDoesNotInventUsage(t *testing.T) {
 		t.Fatal("allocated bytes misrepresented as actual traffic")
 	}
 }
+
+func TestLiveRecoveryLeavesActiveGrantsAlone(t *testing.T) {
+	token := strings.Repeat("a", 256)
+	store, e := journal.Open(t.TempDir(), token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer store.Close()
+	queried := map[string]bool{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		queried[id] = true
+		json.NewEncoder(w).Encode(wire.Grant{ID: id, Bytes: 100, Closed: id == strings.Repeat("4", 32), ExpiresAt: time.Now().Add(-time.Minute)})
+	}))
+	defer server.Close()
+	d := &Daemon{store: store, client: &control.Client{Config: control.Config{Controller: server.URL, Token: token, ServerID: 1}, HTTP: server.Client()}}
+	for i, state := range []string{"requested", "inflight", "abandoned", "uncertain"} {
+		id := strings.Repeat(strconv.Itoa(i+1), 32)
+		if e = store.Put(journal.Entry{Request: wire.GrantRequest{ID: id}, State: state}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	// Recent abandoned work is held for the preceding HTTP request to finish.
+	if e = d.recoverPending(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if len(queried) != 0 {
+		t.Fatal("live recovery raced with a recent request")
+	}
+}

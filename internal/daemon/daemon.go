@@ -69,6 +69,7 @@ func Run(ctx context.Context, c control.Config, version string) error {
 	d := &Daemon{config: c, client: client, store: store, version: version}
 	d.tracker = meter.New(ctx, client, store)
 	d.engine = engine.New(ctx, c.TLSDirectory, d.tracker, store.SaveSnapshot, d.tracker.Update, d.tracker.CloseInbound)
+	defer d.tracker.Stop()
 	defer d.engine.Close()
 	// No listener accepts proxy traffic before previous usage intents are recovered.
 	if e = d.recover(ctx); e != nil {
@@ -129,7 +130,7 @@ func Run(ctx context.Context, c control.Config, version string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			d.tracker.CloseInbound(0)
+			d.tracker.Stop()
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			server.Shutdown(shutdown)
@@ -142,6 +143,9 @@ func Run(ctx context.Context, c control.Config, version string) error {
 			return nil
 		case <-configTick.C:
 			syncConfig()
+			if err := d.recoverPending(ctx, false); err != nil {
+				d.error("中断计量核对暂未完成")
+			}
 		case <-reportTick.C:
 			d.report(ctx)
 		case <-watchTick.C:
@@ -209,7 +213,7 @@ func (d *Daemon) apply(w http.ResponseWriter, r *http.Request) {
 	var s wire.Snapshot
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&s) != nil || engine.ValidateSnapshot(s, d.config.ServerID) != nil {
+	if decoder.Decode(&s) != nil || decoder.Decode(new(any)) != io.EOF || engine.ValidateSnapshot(s, d.config.ServerID) != nil {
 		http.Error(w, "invalid configuration", 400)
 		return
 	}
@@ -221,15 +225,21 @@ func (d *Daemon) apply(w http.ResponseWriter, r *http.Request) {
 	d.error("")
 	json.NewEncoder(w).Encode(map[string]string{"revision": s.Revision})
 }
-func (d *Daemon) recover(ctx context.Context) error {
+func (d *Daemon) recover(ctx context.Context) error { return d.recoverPending(ctx, true) }
+func (d *Daemon) recoverPending(ctx context.Context, startup bool) error {
 	entries, e := d.store.Entries()
 	if e != nil {
 		return e
 	}
+	processed := 0
 	for _, entry := range entries {
+		if !startup && (processed >= 100 || entry.UpdatedAt.After(time.Now().Add(-30*time.Second)) || (entry.State != "abandoned" && entry.State != "uncertain")) {
+			continue
+		}
 		if entry.State == "settled" {
 			continue
 		}
+		processed++
 		job, cancel := context.WithTimeout(ctx, 10*time.Second)
 		grant, err := d.client.GrantStatus(job, entry.Request.ID)
 		cancel()
@@ -250,7 +260,7 @@ func (d *Daemon) recover(ctx context.Context) error {
 			continue
 		}
 		entry.Grant = grant
-		if entry.State == "requested" {
+		if entry.State == "requested" || entry.State == "abandoned" {
 			entry.State = "inflight"
 			if e = d.store.Put(entry); e != nil {
 				return e

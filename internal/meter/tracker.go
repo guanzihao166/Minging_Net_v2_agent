@@ -32,6 +32,9 @@ type Tracker struct {
 	snapshot wire.Snapshot
 	flows    map[string]*flow
 	failed   atomic.Bool
+	stopping atomic.Bool
+	workMu   sync.Mutex
+	work     sync.WaitGroup
 }
 type flow struct {
 	tracker *Tracker
@@ -46,11 +49,29 @@ type flow struct {
 func New(ctx context.Context, c Controller, s *journal.Store) *Tracker {
 	return &Tracker{ctx: ctx, client: c, store: s, flows: map[string]*flow{}}
 }
+func (t *Tracker) begin() bool {
+	t.workMu.Lock()
+	defer t.workMu.Unlock()
+	if t.stopping.Load() {
+		return false
+	}
+	t.work.Add(1)
+	return true
+}
+
+// Stop rejects new work, interrupts blocked sockets and waits for durable settlements.
+func (t *Tracker) Stop() {
+	t.workMu.Lock()
+	t.stopping.Store(true)
+	t.workMu.Unlock()
+	t.CloseInbound(0)
+	t.work.Wait()
+}
 func (t *Tracker) Update(s wire.Snapshot) { t.mu.Lock(); t.snapshot = s; t.mu.Unlock() }
 func (t *Tracker) active(iid, uid, epoch int64) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if t.failed.Load() || !t.snapshot.ValidUntil.After(time.Now()) {
+	if t.stopping.Load() || t.failed.Load() || !t.snapshot.ValidUntil.After(time.Now()) {
 		return false
 	}
 	for _, i := range t.snapshot.Inbounds {
@@ -71,7 +92,7 @@ func (t *Tracker) lookup(m adapter.InboundContext) (int64, wire.User, bool) {
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if t.failed.Load() || !t.snapshot.ValidUntil.After(time.Now()) {
+	if t.stopping.Load() || t.failed.Load() || !t.snapshot.ValidUntil.After(time.Now()) {
 		return 0, wire.User{}, false
 	}
 	for _, i := range t.snapshot.Inbounds {
@@ -91,6 +112,10 @@ func (t *Tracker) lookup(m adapter.InboundContext) (int64, wire.User, bool) {
 	return 0, wire.User{}, false
 }
 func (t *Tracker) admit(ctx context.Context, c io.Closer, m adapter.InboundContext) (*flow, error) {
+	if !t.begin() {
+		return nil, net.ErrClosed
+	}
+	defer t.work.Done()
 	iid, u, ok := t.lookup(m)
 	if !ok {
 		return nil, errors.New("inactive user")
@@ -113,6 +138,11 @@ func (t *Tracker) admit(ctx context.Context, c io.Closer, m adapter.InboundConte
 		return nil, errors.New("configuration changed")
 	}
 	t.mu.Lock()
+	if t.stopping.Load() {
+		t.mu.Unlock()
+		f.close()
+		return nil, net.ErrClosed
+	}
 	t.flows[id] = f
 	t.mu.Unlock()
 	go f.keepAlive()
@@ -187,7 +217,7 @@ func (t *Tracker) Connections() []wire.UserConnections {
 	return out
 }
 func (t *Tracker) Healthy() bool { return !t.failed.Load() }
-func (f *flow) permit(n int) (wire.Grant, error) {
+func (f *flow) permit(n int) (result wire.Grant, failure error) {
 	t := f.tracker
 	if n < 1 || n > 65536 || !t.active(f.lease.InboundID, f.lease.UserID, f.lease.Epoch) || time.Now().UnixNano() >= f.until.Load() {
 		return wire.Grant{}, errors.New("lease inactive")
@@ -202,6 +232,13 @@ func (f *flow) permit(n int) (wire.Grant, error) {
 		t.failed.Store(true)
 		return wire.Grant{}, e
 	}
+	defer func() {
+		if failure != nil {
+			if err := t.store.Abandon(id); err != nil {
+				t.failed.Store(true)
+			}
+		}
+	}()
 	deadline := time.Now().Add(10 * time.Second)
 	var g wire.Grant
 	for {
@@ -261,20 +298,40 @@ func (f *flow) settle(g wire.Grant, up, down int64) error {
 	return e
 }
 func (t *Tracker) RoutedConnection(ctx context.Context, c net.Conn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) net.Conn {
+	// Transfer the core's handshake cache before copy/close goroutines start.
+	var cached []byte
+	if reader, ok := c.(N.CachedReader); ok {
+		if b := reader.ReadCached(); b != nil {
+			cached = append(cached, b.Bytes()...)
+			b.Release()
+		}
+	}
 	f, e := t.admit(ctx, c, m)
 	if e != nil {
 		c.Close()
 		return c
 	}
-	return &meteredConn{Conn: c, f: f}
+	return &meteredConn{Conn: c, f: f, cached: cached}
 }
 func (t *Tracker) RoutedPacketConnection(ctx context.Context, c N.PacketConn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) N.PacketConn {
+	var cached []byte
+	var destination M.Socksaddr
+	if reader, ok := c.(N.CachedPacketReader); ok {
+		if packet := reader.ReadCachedPacket(); packet != nil {
+			if packet.Buffer != nil {
+				cached = append(cached, packet.Buffer.Bytes()...)
+				packet.Buffer.Release()
+			}
+			destination = packet.Destination
+			N.PutPacketBuffer(packet)
+		}
+	}
 	f, e := t.admit(ctx, c, m)
 	if e != nil {
 		c.Close()
 		return c
 	}
-	return &meteredPacket{PacketConn: c, f: f}
+	return &meteredPacket{PacketConn: c, f: f, cached: cached, destination: destination}
 }
 
 // No data may take the accelerated flow path: it has no pre-send grant hook.
@@ -295,13 +352,28 @@ type meteredConn struct {
 	writeMu       sync.Mutex
 	deadlineMu    sync.Mutex
 	writeDeadline time.Time
+	readMu        sync.Mutex
+	cached        []byte
 }
 
 func (c *meteredConn) Read(p []byte) (int, error) {
+	if !c.f.tracker.begin() {
+		return 0, net.ErrClosed
+	}
+	defer c.f.tracker.work.Done()
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if len(p) > 65536 {
 		p = p[:65536]
 	}
-	n, e := c.Conn.Read(p)
+	var n int
+	var e error
+	if len(c.cached) > 0 {
+		n = copy(p, c.cached)
+		c.cached = c.cached[n:]
+	} else {
+		n, e = c.Conn.Read(p)
+	}
 	if n == 0 {
 		return n, e
 	}
@@ -317,6 +389,10 @@ func (c *meteredConn) Read(p []byte) (int, error) {
 	return n, e
 }
 func (c *meteredConn) Write(p []byte) (int, error) {
+	if !c.f.tracker.begin() {
+		return 0, net.ErrClosed
+	}
+	defer c.f.tracker.work.Done()
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	total := 0
@@ -364,15 +440,32 @@ func (c *meteredConn) SetDeadline(t time.Time) error {
 
 type meteredPacket struct {
 	N.PacketConn
-	f       *flow
-	writeMu sync.Mutex
+	f           *flow
+	writeMu     sync.Mutex
+	readMu      sync.Mutex
+	cached      []byte
+	destination M.Socksaddr
 }
 
 func (c *meteredPacket) FrontHeadroom() int { return N.CalculateFrontHeadroom(c.PacketConn) }
 func (c *meteredPacket) RearHeadroom() int  { return N.CalculateRearHeadroom(c.PacketConn) }
 
 func (c *meteredPacket) ReadPacket(b *buf.Buffer) (M.Socksaddr, error) {
-	d, e := c.PacketConn.ReadPacket(b)
+	if !c.f.tracker.begin() {
+		return M.Socksaddr{}, net.ErrClosed
+	}
+	defer c.f.tracker.work.Done()
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	var d M.Socksaddr
+	var e error
+	if c.cached != nil {
+		_, e = b.Write(c.cached)
+		d = c.destination
+		c.cached = nil
+	} else {
+		d, e = c.PacketConn.ReadPacket(b)
+	}
 	if e != nil {
 		return d, e
 	}
@@ -392,6 +485,11 @@ func (c *meteredPacket) ReadPacket(b *buf.Buffer) (M.Socksaddr, error) {
 	return d, nil
 }
 func (c *meteredPacket) WritePacket(b *buf.Buffer, d M.Socksaddr) error {
+	if !c.f.tracker.begin() {
+		b.Release()
+		return net.ErrClosed
+	}
+	defer c.f.tracker.work.Done()
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	n := b.Len()

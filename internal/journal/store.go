@@ -16,10 +16,11 @@ import (
 )
 
 type Entry struct {
-	Request wire.GrantRequest `json:"request"`
-	Grant   wire.Grant        `json:"grant"`
-	State   string            `json:"state"`
-	Report  wire.GrantReport  `json:"report"`
+	Request   wire.GrantRequest `json:"request"`
+	Grant     wire.Grant        `json:"grant"`
+	State     string            `json:"state"`
+	Report    wire.GrantReport  `json:"report"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 type Store struct {
 	db     *bolt.DB
@@ -42,7 +43,7 @@ func Open(dir, token string) (*Store, error) {
 				return err
 			}
 		}
-		return nil
+		return setJournalCount(tx, uint64(tx.Bucket([]byte("grants")).Stats().KeyN))
 	})
 	if e != nil {
 		db.Close()
@@ -80,12 +81,18 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Put(e Entry) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("grants"))
-		if b.Stats().KeyN > 100000 {
+		if b.Get([]byte(e.Request.ID)) == nil && journalCount(tx) >= 100000 {
 			return errors.New("usage journal capacity reached")
 		}
+		e.UpdatedAt = time.Now().UTC()
 		raw, err := json.Marshal(e)
 		if err != nil {
 			return err
+		}
+		if b.Get([]byte(e.Request.ID)) == nil {
+			if err = setJournalCount(tx, journalCount(tx)+1); err != nil {
+				return err
+			}
 		}
 		return b.Put([]byte(e.Request.ID), raw)
 	})
@@ -139,8 +146,57 @@ func (s *Store) Entries() ([]Entry, error) {
 	})
 	return items, err
 }
+func journalCount(tx *bolt.Tx) uint64 {
+	value := tx.Bucket([]byte("state")).Get([]byte("journal_count"))
+	if len(value) == 8 {
+		return binary.BigEndian.Uint64(value)
+	}
+	return 0
+}
+func setJournalCount(tx *bolt.Tx, n uint64) error {
+	value := make([]byte, 8)
+	binary.BigEndian.PutUint64(value, n)
+	return tx.Bucket([]byte("state")).Put([]byte("journal_count"), value)
+}
+func dropGrant(tx *bolt.Tx, id string) error {
+	b := tx.Bucket([]byte("grants"))
+	if b.Get([]byte(id)) == nil {
+		return nil
+	}
+	if err := b.Delete([]byte(id)); err != nil {
+		return err
+	}
+	n := journalCount(tx)
+	if n > 0 {
+		n--
+	}
+	return setJournalCount(tx, n)
+}
 func (s *Store) Drop(id string) error {
-	return s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("grants")).Delete([]byte(id)) })
+	return s.db.Update(func(tx *bolt.Tx) error { return dropGrant(tx, id) })
+}
+func (s *Store) Abandon(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("grants"))
+		raw := b.Get([]byte(id))
+		if raw == nil {
+			return nil
+		}
+		var entry Entry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return err
+		}
+		if entry.State != "requested" {
+			return nil
+		}
+		entry.State = "abandoned"
+		entry.UpdatedAt = time.Now().UTC()
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), raw)
+	})
 }
 func (s *Store) Totals() (int64, int64) {
 	var up, down int64
@@ -252,7 +308,7 @@ func (s *Store) AckReport(raw []byte) error {
 			return errors.New("outbox acknowledgement mismatch")
 		}
 		for _, g := range report.Grants {
-			if e := tx.Bucket([]byte("grants")).Delete([]byte(g.ID)); e != nil {
+			if e := dropGrant(tx, g.ID); e != nil {
 				return e
 			}
 		}
