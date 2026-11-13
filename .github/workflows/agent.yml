@@ -74,7 +74,7 @@ jobs:
           else
             case "$IMAGE" in
               ubuntu:*|debian:*) packages='apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y systemd systemd-sysv python3 ca-certificates curl openssl tar gzip coreutils' ;;
-              *) packages='dnf install -y systemd python3 ca-certificates curl openssl tar gzip coreutils' ;;
+              *) packages='dnf install -y systemd python3 ca-certificates openssl tar gzip' ;;
             esac
             printf 'FROM %s\nENV container=docker\nRUN %s\nCMD ["/sbin/init"]\n' "$IMAGE" "$packages" > /tmp/installer.Dockerfile
             docker build -t mnet-installer-ci -f /tmp/installer.Dockerfile /tmp

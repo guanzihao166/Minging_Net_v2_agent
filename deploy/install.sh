@@ -23,13 +23,26 @@ case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then init=systemd
 elif command -v rc-service >/dev/null 2>&1; then init=openrc
 else echo 'An active systemd or OpenRC installation is required.' >&2; exit 2; fi
-missing=0
-for command in curl openssl tar gzip sha256sum; do command -v "$command" >/dev/null 2>&1 || missing=1; done
-if [ "$missing" = 1 ]; then
- if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y ca-certificates curl openssl tar gzip coreutils
- elif command -v dnf >/dev/null 2>&1; then dnf install -y ca-certificates curl openssl tar gzip coreutils
- elif command -v yum >/dev/null 2>&1; then yum install -y ca-certificates curl openssl tar gzip coreutils
- elif command -v apk >/dev/null 2>&1; then apk add --no-cache ca-certificates curl openssl tar gzip coreutils
+missing=
+for command in curl openssl tar gzip sha256sum; do
+ if ! command -v "$command" >/dev/null 2>&1; then
+  case "$command" in sha256sum) missing="$missing coreutils";; *) missing="$missing $command";; esac
+ fi
+done
+need_user=0
+if ! command -v useradd >/dev/null 2>&1 && ! command -v adduser >/dev/null 2>&1; then need_user=1; fi
+if [ -n "$missing" ] || [ "$need_user" = 1 ]; then
+ # Do not replace working curl-minimal/coreutils-single packages on EL systems.
+ if command -v apt-get >/dev/null 2>&1; then
+  [ "$need_user" != 1 ] || missing="$missing passwd"
+  apt-get update && apt-get install -y ca-certificates $missing
+ elif command -v dnf >/dev/null 2>&1; then
+  [ "$need_user" != 1 ] || missing="$missing shadow-utils"
+  dnf install -y ca-certificates $missing
+ elif command -v yum >/dev/null 2>&1; then
+  [ "$need_user" != 1 ] || missing="$missing shadow-utils"
+  yum install -y ca-certificates $missing
+ elif command -v apk >/dev/null 2>&1; then apk add --no-cache ca-certificates $missing
  else echo 'Install curl, CA certificates, openssl, tar, gzip and sha256sum first.' >&2; exit 2; fi
 fi
 base=/opt/minging-agent
