@@ -2,11 +2,10 @@ package engine
 
 import (
 	"context"
-	"errors"
+	"github.com/guanzihao166/Minging_Net_v2_agent/internal/egress"
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 	"net"
-	"net/netip"
 )
 
 // Only package-local tests can set this context key. There is no wire/config
@@ -21,35 +20,16 @@ type meteredDirect struct {
 func (d *meteredDirect) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	return d.life.Start(stage, scope)
 }
-func publicAddress(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-		return false
-	}
-	for _, cidr := range []string{"0.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "240.0.0.0/4"} {
-		if netip.MustParsePrefix(cidr).Contains(ip) {
-			return false
-		}
-	}
-	return true
-}
 func resolveDestination(ctx context.Context, d M.Socksaddr, allowPrivate bool) (M.Socksaddr, error) {
+	host := d.Fqdn
 	if d.IsIP() {
-		if !allowPrivate && !publicAddress(d.Addr) {
-			return d, errors.New("private destination denied")
-		}
-		return d, nil
+		host = d.Addr.String()
 	}
-	ips, e := net.DefaultResolver.LookupNetIP(ctx, "ip", d.Fqdn)
-	if e != nil || len(ips) == 0 {
-		return d, errors.New("destination resolution failed")
+	ip, e := egress.Resolve(ctx, host, allowPrivate)
+	if e != nil {
+		return d, e
 	}
-	for _, ip := range ips {
-		if !allowPrivate && !publicAddress(ip) {
-			return d, errors.New("private DNS result denied")
-		}
-	}
-	d.Addr = ips[0].Unmap()
+	d.Addr = ip
 	d.Fqdn = ""
 	return d, nil
 }

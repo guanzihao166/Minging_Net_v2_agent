@@ -4,7 +4,14 @@
 
 ## 协议与控制
 
-VLESS / VMess / Shadowsocks 2022（AES-128 / AES-256 多用户）/ Trojan / WireGuard（用户态）/ Hysteria 2 / TUIC v5。主控下发独立用户凭据；每次连接领取跨服务器共享租约，流量先预留、实际传输后持久结算。未确认的发送窗口保留给管理员核对，预留额度不会虚构成实际流量。
+两套协议核心按入站选择，共用同一计量、租约与出口策略：
+
+- **Xray-core v26.11.9**（VLESS、Trojan）：安全层 TLS / REALITY（含可选 ML-DSA-65 签名）/ none（仅限已启用 VLESS Encryption）；传输 RAW、XHTTP（auto / packet-up / stream-up / stream-one 及 extra）、WebSocket、gRPC、HTTPUpgrade；VLESS Encryption `mlkem768x25519plus`（native / xorpub / random，X25519 或 ML-KEM-768 认证）；流控 `xtls-rprx-vision`。REALITY 仅组合 RAW / XHTTP / gRPC，XHTTP 仅用于 VLESS。
+- **sing-box v1.14.4**：VMess（RAW / WebSocket / gRPC，可选 TLS）、Shadowsocks 2022（AES-128 / AES-256 多用户）、WireGuard（用户态）、Hysteria 2（Salamander 混淆、可选 HTTPS 伪装站）、TUIC v5、AnyTLS。
+
+主控下发独立用户凭据；每次连接领取跨服务器共享租约，流量先预留、实际传输后持久结算。未确认的发送窗口保留给管理员核对，预留额度不会虚构成实际流量。Xray 连接强制关闭内核 splice 零拷贝，确保 Vision 等路径同样逐块计量。
+
+客户端兼容性（已用真实客户端验证）：Xray v26 REALITY 只接受带 X25519MLKEM768 密钥交换的 ClientHello，Xray 内核客户端与 mihomo（订阅自动带 `support-x25519mlkem768`）可用；sing-box 1.14 的 REALITY 客户端会被拒绝。Xray 26 客户端的 HTTPUpgrade 与 sing-box 服务端不兼容，因此 HTTPUpgrade 只开放给 Xray 承载的协议。VMess 保留在 sing-box，兼容 sing-box 客户端 TLS 下 `auto` 自动降为 `zero` 的行为。
 
 控制通道使用源 IP 白名单、每服务器 256 字符令牌、HMAC 请求签名、时间窗口与持久 nonce 防重放。主控固定 Agent 管理 TLS 证书摘要。主控配置有效期 90 秒，租约与短期字节许可失效后停止转发。代理流量拒绝私有地址、环回与元数据地址，WireGuard 快速转发路径关闭，以保证计量不被绕过。
 
@@ -20,7 +27,7 @@ VLESS / VMess / Shadowsocks 2022（AES-128 / AES-256 多用户）/ Trojan / Wire
 
 ## 构建与分发
 
-Go 1.26：`CGO_ENABLED=0 go build -tags with_gvisor ./cmd/agent`。测试：`go test -race -tags with_gvisor ./...`。Linux 持续集成执行全部七种协议 TCP/UDP 实连、配置失败回滚、管理签名重放、崩溃恢复和停机结算测试。
+Go 1.27：`CGO_ENABLED=0 go build -tags with_gvisor ./cmd/agent`。测试：`go test -race -tags with_gvisor ./...`。Linux 持续集成执行协议 TCP/UDP 实连、REALITY / XHTTP / VLESS Encryption 矩阵、额度截断、私有地址拒绝、配置失败回滚、管理签名重放、崩溃恢复和停机结算测试。`MNET_MIHOMO=<mihomo 可执行文件> go test -tags with_gvisor -run TestMihomoInterop ./internal/engine` 用真实 mihomo 客户端验证全部现代组合；加 `with_utls` 标签可额外运行 sing-box REALITY 客户端对照。
 
 `python scripts/package_release.py --key /private/release-signing.key --output /private/release-output` 生成两个架构、签名清单、安装脚本及带全部 vendor 依赖的对应源码包。签名私钥始终保留仓库外；公钥固定在 `deploy/release-signing.pub`。首次生成公钥后提交，再对干净提交构建正式发行包。维护者应保护并备份签名私钥，换钥时通过可信渠道重新发布安装脚本。
 
@@ -28,6 +35,6 @@ Go 1.26：`CGO_ENABLED=0 go build -tags with_gvisor ./cmd/agent`。测试：`go 
 
 ## 许可证与验收边界
 
-核心固定官方 sing-box v1.14.4。Agent 链接 GPL-3.0-or-later 协议核心，Agent 以同一许可证提供；面板通过独立 HTTP 协议通信。仓库保持私有，源码和许可证仍随二进制向接收者提供。
+核心固定官方 sing-box v1.14.4（GPL-3.0-or-later）与 Xray-core v26.11.9（MPL-2.0，提交 676eaf6）。Agent 整体以 GPL-3.0-or-later 提供，MPL-2.0 部分的源码随对应源码包一并提供；面板通过独立 HTTP 协议通信。仓库保持私有，源码和许可证仍随二进制向接收者提供。
 
 回环实连与持续集成不替代生产公网、容量和各发行版安装验收。主项目 `docs/ACCEPTANCE.md` 记录实际证据及尚待通过的项目。Shadowrocket 与 V2Ray 的协议能力不同，订阅格式按支持范围输出。

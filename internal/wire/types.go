@@ -1,6 +1,9 @@
 package wire
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const ProtocolVersion = 1
 
@@ -30,12 +33,47 @@ type ClientConfig struct {
 	MTU              int      `json:"mtu"`
 	ObfsPassword     string   `json:"obfs_password"`
 	Congestion       string   `json:"congestion"`
+	// Fields below require agent 0.2.0; the controller withholds inbounds that
+	// use them from older agents rather than letting them be misread.
+	Security             string          `json:"security,omitempty"` // none, tls or reality; empty follows TLS
+	Fingerprint          string          `json:"fingerprint,omitempty"`
+	RealityTarget        string          `json:"reality_target,omitempty"`
+	RealityServerNames   []string        `json:"reality_server_names,omitempty"`
+	RealitySpiderX       string          `json:"reality_spider_x,omitempty"`
+	RealityMldsa65Verify string          `json:"reality_mldsa65_verify,omitempty"`
+	RealityMaxTimeDiff   int64           `json:"reality_max_time_diff,omitempty"` // milliseconds
+	XHTTPMode            string          `json:"xhttp_mode,omitempty"`
+	XHTTPExtra           json.RawMessage `json:"xhttp_extra,omitempty"`
+	GRPCMultiMode        bool            `json:"grpc_multi_mode,omitempty"`
+	Encryption           string          `json:"encryption,omitempty"` // VLESS client "encryption"
+	VMessCipher          string          `json:"vmess_cipher,omitempty"`
+	TLSMinVersion        string          `json:"tls_min_version,omitempty"`
+	RejectUnknownSNI     bool            `json:"reject_unknown_sni,omitempty"`
+	Masquerade           string          `json:"masquerade,omitempty"`
+	PaddingScheme        []string        `json:"padding_scheme,omitempty"`
 }
+
+// EffectiveSecurity maps the legacy TLS flag onto the security layer name.
+func (c ClientConfig) EffectiveSecurity() string {
+	if c.Security != "" {
+		return c.Security
+	}
+	if c.TLS {
+		return "tls"
+	}
+	return "none"
+}
+
 type Secrets struct {
 	LocalTLS     bool   `json:"local_tls,omitempty"`
 	Certificate  string `json:"certificate,omitempty"`
 	PrivateKey   string `json:"private_key,omitempty"`
 	WGPrivateKey string `json:"wg_private_key,omitempty"`
+	// REALITY X25519 private key and optional ML-DSA-65 seed (base64url, raw).
+	RealityPrivateKey  string `json:"reality_private_key,omitempty"`
+	RealityMldsa65Seed string `json:"reality_mldsa65_seed,omitempty"`
+	// VLESS Encryption server "decryption" string; it embeds the private key.
+	Decryption string `json:"decryption,omitempty"`
 }
 type User struct {
 	ID             int64      `json:"id"`
