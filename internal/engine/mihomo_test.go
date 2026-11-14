@@ -53,6 +53,19 @@ func TestMihomoInterop(t *testing.T) {
 			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
 			return p
 		}, true},
+		// The fallback guard must admit mihomo exactly as REALITY does.
+		{"vless-reality-vision-pq-reject-fallback", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityRejectFallback = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, true)
+			return p
+		}, false},
+		{"trojan-reality-reject-fallback", "trojan", func(t *testing.T, in *wire.Inbound) { reality(t, in); in.Config.RealityRejectFallback = true }, func(in wire.Inbound) map[string]any {
+			return map[string]any{"type": "trojan", "server": "127.0.0.1", "port": in.Port, "password": in.Users[0].Credential.Password, "udp": true, "sni": "example.com", "client-fingerprint": "chrome", "reality-opts": realityOpts(in, true)}
+		}, false},
 		{"vless-reality-grpc", "vless", func(t *testing.T, in *wire.Inbound) {
 			reality(t, in)
 			in.Config.Transport = "grpc"

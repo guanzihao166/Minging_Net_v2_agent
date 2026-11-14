@@ -49,8 +49,12 @@ var logConfigType = serial.GetMessageType(&applog.Config{})
 
 func init() { xlog.RegisterHandler(errorLog{}) }
 
-// Instance is one inbound served by its own Xray core.
-type Instance struct{ server *core.Instance }
+// Instance is one inbound served by its own Xray core, with the fallback guard
+// in front of its REALITY target when unauthenticated fallback is refused.
+type Instance struct {
+	server *core.Instance
+	guard  *realityGuard
+}
 
 // Load parses and validates a configuration produced by Build. Xray's parsers
 // may panic on malformed input; that must reject the inbound, not the agent.
@@ -85,6 +89,18 @@ func New(ctx context.Context, raw []byte, tracker *meter.Tracker, allowPrivate b
 	if e != nil {
 		return nil, e
 	}
+	var side struct {
+		Guard *GuardSpec `json:"mingingRealityGuard"`
+	}
+	if e = json.Unmarshal(raw, &side); e != nil {
+		return nil, fmt.Errorf("protocol configuration rejected: %w", e)
+	}
+	var guard *realityGuard
+	if side.Guard != nil {
+		if guard, e = newGuard(*side.Guard); e != nil {
+			return nil, fmt.Errorf("protocol configuration rejected: %w", e)
+		}
+	}
 	server, e := newCore(config)
 	if e != nil {
 		return nil, fmt.Errorf("protocol core rejected configuration: %w", e)
@@ -109,7 +125,7 @@ func New(ctx context.Context, raw []byte, tracker *meter.Tracker, allowPrivate b
 		server.Close()
 		return nil, fmt.Errorf("egress setup failed: %w", e)
 	}
-	return &Instance{server: server}, nil
+	return &Instance{server: server, guard: guard}, nil
 }
 
 func newCore(config *core.Config) (server *core.Instance, err error) {
@@ -121,5 +137,27 @@ func newCore(config *core.Config) (server *core.Instance, err error) {
 	return core.New(config)
 }
 
-func (i *Instance) Start() error { return i.server.Start() }
-func (i *Instance) Close() error { return i.server.Close() }
+// Start brings the guard up first: REALITY dials it for every connection and
+// Xray looks up the target measurements the guard publishes when it starts.
+func (i *Instance) Start() error {
+	if i.guard != nil {
+		if e := i.guard.Start(); e != nil {
+			return e
+		}
+	}
+	if e := i.server.Start(); e != nil {
+		if i.guard != nil {
+			i.guard.Close()
+		}
+		return e
+	}
+	return nil
+}
+
+func (i *Instance) Close() error {
+	e := i.server.Close()
+	if i.guard != nil {
+		i.guard.Close()
+	}
+	return e
+}

@@ -159,6 +159,7 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 		settings["decryption"] = decryption
 	}
 	stream := map[string]any{"network": transport, "security": security}
+	var guard *GuardSpec
 	switch transport {
 	case "raw":
 		stream["rawSettings"] = map[string]any{}
@@ -249,7 +250,14 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 		if !keyPattern.MatchString(in.Secrets.RealityPrivateKey) || !shortIDPattern.MatchString(c.RealityShortID) || len(c.RealityShortID)%2 != 0 {
 			return nil, fmt.Errorf("invalid REALITY key or short ID")
 		}
-		r := map[string]any{"target": c.RealityTarget, "serverNames": names, "privateKey": in.Secrets.RealityPrivateKey, "shortIds": []string{c.RealityShortID},
+		target := c.RealityTarget
+		if c.RealityRejectFallback {
+			// REALITY dials the guard, which authenticates the mirrored
+			// ClientHello and only then reaches the real target.
+			guard = &GuardSpec{Listen: guardAddress(in.ListenHost, in.Port, in.ID, c.RealityTarget), Target: c.RealityTarget, ServerNames: names, PrivateKey: in.Secrets.RealityPrivateKey, ShortIDs: []string{c.RealityShortID}, MaxTimeDiff: c.RealityMaxTimeDiff}
+			target = guard.Listen
+		}
+		r := map[string]any{"target": target, "serverNames": names, "privateKey": in.Secrets.RealityPrivateKey, "shortIds": []string{c.RealityShortID},
 			// Pinning 0.0.0 keeps non-Xray clients (mihomo, sing-box) admissible
 			// even if a future core default raises the minimum client version.
 			"minClientVer": "0.0.0"}
@@ -267,5 +275,8 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 	inbound := map[string]any{"tag": tag, "listen": in.ListenHost, "port": in.Port, "protocol": in.Protocol, "settings": settings, "streamSettings": stream}
 	level := map[string]any{"handshake": 4, "connIdle": 300, "uplinkOnly": 1, "downlinkOnly": 1, "bufferSize": 64}
 	document := map[string]any{"policy": map[string]any{"levels": map[string]any{"0": level}}, "inbounds": []any{inbound}, "outbounds": []any{}}
+	if guard != nil {
+		document[guardDocumentKey] = guard
+	}
 	return json.Marshal(document)
 }
