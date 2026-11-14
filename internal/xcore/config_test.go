@@ -1,12 +1,15 @@
 package xcore
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/wire"
+	"github.com/xtls/xray-core/app/proxyman"
+	xreality "github.com/xtls/xray-core/transport/internet/reality"
 )
 
 func inbound() wire.Inbound {
@@ -14,6 +17,54 @@ func inbound() wire.Inbound {
 		Config:  wire.ClientConfig{Security: "reality", Transport: "xhttp", Path: "/x", ServerName: "www.example.com", RealityTarget: "www.example.com:443", RealityShortID: "0123abcd", XHTTPExtra: json.RawMessage(`{"xPaddingBytes":"100-1000","xmux":{"maxConcurrency":"16-32"},"downloadSettings":{"address":"evil"}}`)},
 		Secrets: wire.Secrets{RealityPrivateKey: strings.Repeat("A", 43)},
 		Users:   []wire.User{{ID: 3, Epoch: 1, ExpiresAt: time.Now().Add(time.Hour), SpeedMbps: 10, MaxConnections: 2, Credential: wire.Credential{UUID: "00c3cf1b-80f0-477c-bb0d-a051ee220191"}}}}
+}
+
+// Inspect the configuration actually passed to the core, not just JSON text.
+// Saved configurations carrying old bounds must follow the same policy.
+func TestRealityClientVersionBoundsDisabled(t *testing.T) {
+	for _, transport := range []string{"raw", "xhttp", "grpc"} {
+		for _, guarded := range []bool{false, true} {
+			for _, saved := range []bool{false, true} {
+				in := inbound()
+				in.Config.Transport = transport
+				in.Config.ServiceName = "version-policy"
+				in.Config.RealityRejectFallback = guarded
+				raw, err := Build(in, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved {
+					var doc map[string]any
+					if err := json.Unmarshal(raw, &doc); err != nil {
+						t.Fatal(err)
+					}
+					settings := doc["inbounds"].([]any)[0].(map[string]any)["streamSettings"].(map[string]any)["realitySettings"].(map[string]any)
+					settings["minClientVer"], settings["maxClientVer"] = "26.3.27", "26.11.9"
+					raw, err = json.Marshal(doc)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				built, err := Load(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receiver, err := built.Inbound[0].ReceiverSettings.GetInstance()
+				if err != nil {
+					t.Fatal(err)
+				}
+				stream := receiver.(*proxyman.ReceiverConfig).StreamSettings
+				security, err := stream.SecuritySettings[0].GetInstance()
+				if err != nil {
+					t.Fatal(err)
+				}
+				settings := security.(*xreality.Config)
+				if !bytes.Equal(settings.MinClientVer, []byte{0, 0, 0}) || len(settings.MaxClientVer) != 0 {
+					t.Fatalf("client version bounds active: %v / %v", settings.MinClientVer, settings.MaxClientVer)
+				}
+			}
+		}
+	}
 }
 
 func TestBuildRealityXHTTP(t *testing.T) {

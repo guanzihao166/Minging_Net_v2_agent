@@ -68,6 +68,17 @@ func Load(raw []byte) (config *core.Config, err error) {
 	if e := json.Unmarshal(raw, &document); e != nil {
 		return nil, fmt.Errorf("protocol configuration rejected: %w", e)
 	}
+	// Apply the agent's compatibility policy at the load boundary as well as in
+	// Build, including restored configurations with stale version constraints.
+	// This controls version bytes only; REALITY's TLS/key-share requirements stay
+	// those of the pinned upstream core.
+	for i := range document.InboundConfigs {
+		stream := document.InboundConfigs[i].StreamSetting
+		if stream != nil && stream.REALITYSettings != nil {
+			stream.REALITYSettings.MinClientVer = "0.0.0"
+			stream.REALITYSettings.MaxClientVer = ""
+		}
+	}
 	built, e := document.Build()
 	if e != nil {
 		return nil, fmt.Errorf("protocol configuration rejected: %w", e)

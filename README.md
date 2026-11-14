@@ -17,6 +17,8 @@ REALITY 可选“拒绝未认证回落”（0.3.0）：入站的 target 改为�
 
 客户端兼容性（已用真实客户端验证）：Xray v26 REALITY 只接受带 X25519MLKEM768 密钥交换的 ClientHello，Xray 内核客户端与 mihomo（订阅自动带 `support-x25519mlkem768`）可用；sing-box 1.14 的 REALITY 客户端会被拒绝。Xray 26 客户端的 HTTPUpgrade 与 sing-box 服务端不兼容，因此 HTTPUpgrade 只开放给 Xray 承载的协议。VMess 保留在 sing-box，兼容 sing-box 客户端 TLS 下 `auto` 自动降为 `zero` 的行为。
 
+0.3.1 明确禁用 REALITY 客户端版本范围：生成配置写入 `minClientVer: "0.0.0"`、`maxClientVer: ""`，加载旧配置时同样覆盖遗留范围；测试检查 Xray 实际接收的 protobuf 配置。版本号不再构成拒绝原因，REALITY 的 TLS 1.3 和混合密钥交换要求仍适用。
+
 控制通道使用源 IP 白名单、每服务器 256 字符令牌、HMAC 请求签名、时间窗口与持久 nonce 防重放。主控固定 Agent 管理 TLS 证书摘要。主控配置有效期 90 秒，租约与短期字节许可失效后停止转发。代理流量拒绝私有地址、环回与元数据地址，WireGuard 快速转发路径关闭，以保证计量不被绕过。
 
 ## 安装与升级

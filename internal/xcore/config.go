@@ -258,9 +258,9 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 			target = guard.Listen
 		}
 		r := map[string]any{"target": target, "serverNames": names, "privateKey": in.Secrets.RealityPrivateKey, "shortIds": []string{c.RealityShortID},
-			// Pinning 0.0.0 keeps non-Xray clients (mihomo, sing-box) admissible
-			// even if a future core default raises the minimum client version.
-			"minClientVer": "0.0.0"}
+			// Disable client-version bounds explicitly. Protocol compatibility
+			// (including hybrid key shares) is still checked by REALITY.
+			"minClientVer": "0.0.0", "maxClientVer": ""}
 		if c.RealityMaxTimeDiff > 0 {
 			r["maxTimeDiff"] = c.RealityMaxTimeDiff
 		}
