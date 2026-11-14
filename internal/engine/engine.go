@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/guanzihao166/Minging_Net_v2_agent/internal/meter"
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/wire"
+	"github.com/guanzihao166/Minging_Net_v2_agent/internal/xcore"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -12,9 +14,15 @@ import (
 	"sync"
 )
 
+// coreRuntime is a started-or-stoppable protocol core serving one inbound.
+type coreRuntime interface {
+	Start() error
+	Close() error
+}
 type instance struct {
-	box *box.Box
-	raw []byte
+	box  coreRuntime
+	core string
+	raw  []byte
 }
 type Engine struct {
 	mu           sync.Mutex
@@ -46,6 +54,15 @@ func (e *Engine) make(raw []byte) (*box.Box, error) {
 	}
 	return b, nil
 }
+func (e *Engine) start(core string, raw []byte) (coreRuntime, error) {
+	if core == coreXray {
+		// Without the metering tracker no Xray connection can be admitted.
+		tracker, _ := e.tracker.(*meter.Tracker)
+		allowPrivate, _ := e.ctx.Value(egressTestKey{}).(bool)
+		return xcore.New(e.ctx, raw, tracker, allowPrivate)
+	}
+	return e.make(raw)
+}
 func (e *Engine) Apply(s wire.Snapshot) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -67,19 +84,19 @@ func (e *Engine) Apply(s wire.Snapshot) error {
 		if len(in.Users) == 0 {
 			continue
 		}
-		raw, err := Build(in, e.tlsDirectory)
+		core, raw, err := Plan(in, e.tlsDirectory)
 		if err != nil {
-			return err
+			return fmt.Errorf("inbound %d rejected: %w", in.ID, err)
 		}
-		if old, ok := e.instances[in.ID]; ok && bytes.Equal(old.raw, raw) {
+		if old, ok := e.instances[in.ID]; ok && old.core == core && bytes.Equal(old.raw, raw) {
 			candidate[in.ID] = old
 			continue
 		}
-		b, err := e.make(raw)
+		b, err := e.start(core, raw)
 		if err != nil {
 			return fmt.Errorf("inbound %d validation failed: %w", in.ID, err)
 		}
-		candidate[in.ID] = instance{b, raw}
+		candidate[in.ID] = instance{b, core, raw}
 	}
 	changed := map[int64]instance{}
 	for id, old := range e.instances {
@@ -113,7 +130,7 @@ func (e *Engine) Apply(s wire.Snapshot) error {
 		}
 		candidate = map[int64]instance{} // already closed above; avoid double close during rollback
 		for id, old := range changed {
-			restored, err := e.make(old.raw)
+			restored, err := e.start(old.core, old.raw)
 			if err != nil {
 				return fmt.Errorf("configuration failed; previous inbound %d restore failed", id)
 			}
@@ -121,7 +138,7 @@ func (e *Engine) Apply(s wire.Snapshot) error {
 				restored.Close()
 				return fmt.Errorf("configuration failed; previous inbound %d restart failed", id)
 			}
-			e.instances[id] = instance{restored, old.raw}
+			e.instances[id] = instance{restored, old.core, old.raw}
 		}
 		return failure
 	}

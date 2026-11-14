@@ -13,12 +13,11 @@ import (
 	"github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/anytls"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/hysteria2"
 	"github.com/sagernet/sing-box/protocol/shadowsocks"
-	"github.com/sagernet/sing-box/protocol/trojan"
 	"github.com/sagernet/sing-box/protocol/tuic"
-	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
 	"github.com/sagernet/sing-box/protocol/wireguard"
 )
@@ -26,11 +25,11 @@ import (
 // The ordinary user-space connection path is mandatory: the WireGuard fast
 // flow path bypasses stream backpressure and therefore cannot enforce grants.
 func coreContext(ctx context.Context) context.Context {
+	// VLESS and Trojan are served by the Xray core (package xcore).
 	ir := inbound.NewRegistry()
-	vless.RegisterInbound(ir)
+	anytls.RegisterInbound(ir)
 	vmess.RegisterInbound(ir)
 	shadowsocks.RegisterInbound(ir)
-	trojan.RegisterInbound(ir)
 	hysteria2.RegisterInbound(ir)
 	tuic.RegisterInbound(ir)
 	or := outbound.NewRegistry()
