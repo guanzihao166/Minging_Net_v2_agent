@@ -10,6 +10,7 @@ import (
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/engine"
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/journal"
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/meter"
+	"github.com/guanzihao166/Minging_Net_v2_agent/internal/realityprobe"
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/wire"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +33,7 @@ type Daemon struct {
 	mu        sync.Mutex
 	lastError string
 	metrics   metricsState
+	probing   atomic.Bool
 }
 
 func Load(path string) (control.Config, error) {
@@ -82,6 +85,7 @@ func Run(ctx context.Context, c control.Config, version string) error {
 	}
 	handler := http.NewServeMux()
 	handler.HandleFunc("PUT /v1/config", d.apply)
+	handler.HandleFunc("POST /v1/reality/probe", d.realityProbe)
 	handler.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"version": version, "healthy": d.tracker.Healthy()})
 	})
@@ -224,6 +228,28 @@ func (d *Daemon) apply(w http.ResponseWriter, r *http.Request) {
 	}
 	d.error("")
 	json.NewEncoder(w).Encode(map[string]string{"revision": s.Revision})
+}
+
+// realityProbe measures REALITY target candidates from this node for the
+// controller's target picker. One measurement runs at a time.
+func (d *Daemon) realityProbe(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Targets []realityprobe.Target `json:"targets"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || len(input.Targets) == 0 || len(input.Targets) > realityprobe.MaxTargets {
+		http.Error(w, "invalid probe request", 400)
+		return
+	}
+	if !d.probing.CompareAndSwap(false, true) {
+		http.Error(w, "probe already running", 429)
+		return
+	}
+	defer d.probing.Store(false)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	json.NewEncoder(w).Encode(map[string]any{"results": realityprobe.Probe(ctx, input.Targets, false)})
 }
 func (d *Daemon) recover(ctx context.Context) error { return d.recoverPending(ctx, true) }
 func (d *Daemon) recoverPending(ctx context.Context, startup bool) error {
