@@ -9,6 +9,10 @@
 - **Xray-core v26.11.9**（VLESS、Trojan）：安全层 TLS / REALITY（含可选 ML-DSA-65 签名）/ none（仅限已启用 VLESS Encryption）；传输 RAW、XHTTP（auto / packet-up / stream-up / stream-one 及 extra）、WebSocket、gRPC、HTTPUpgrade；VLESS Encryption `mlkem768x25519plus`（native / xorpub / random，X25519 或 ML-KEM-768 认证）；流控 `xtls-rprx-vision`。REALITY 仅组合 RAW / XHTTP / gRPC，XHTTP 仅用于 VLESS。
 - **sing-box v1.14.4**：VMess（RAW / WebSocket / gRPC，可选 TLS）、Shadowsocks 2022（AES-128 / AES-256 多用户）、WireGuard（用户态）、Hysteria 2（Salamander 混淆、可选 HTTPS 伪装站）、TUIC v5、AnyTLS。
 
+REALITY 可选“拒绝未认证回落”（0.3.0）：入站的 target 改为本机抽象 Unix 套接字上的守卫。REALITY 会把每个连接的 ClientHello 镜像给 target，守卫按 REALITY 服务端相同的规则（TLS 1.3、serverNames、X25519MLKEM768 密钥份额、会话 ID 认证、Short ID 与时间差）复核：未通过的连接直接关闭，不连接真实目标、不转发任何字节；通过的握手照常借用真实目标的握手，之后若 REALITY 再向目标写入数据即切断。目标站点的握手后记录长度等测量值在守卫启动时直接对真实目标测得，伪装特征与未开启时一致。代价是主动探测不再看到真实站点的响应。
+
+管理接口 `POST /v1/reality/probe`（0.3.0）供主控的目标选择器从节点测速：最多 16 个候选并发，每个候选解析一次后握手两次取最快，报告 TLS 版本、ALPN、密钥交换、证书链是否可信、哪些 serverNames 被证书覆盖与证书链字节数；解析到私有、环回或保留地址的目标不会被连接。同一时间只运行一次测速。
+
 主控下发独立用户凭据；每次连接领取跨服务器共享租约，流量先预留、实际传输后持久结算。未确认的发送窗口保留给管理员核对，预留额度不会虚构成实际流量。Xray 连接强制关闭内核 splice 零拷贝，确保 Vision 等路径同样逐块计量。
 
 客户端兼容性（已用真实客户端验证）：Xray v26 REALITY 只接受带 X25519MLKEM768 密钥交换的 ClientHello，Xray 内核客户端与 mihomo（订阅自动带 `support-x25519mlkem768`）可用；sing-box 1.14 的 REALITY 客户端会被拒绝。Xray 26 客户端的 HTTPUpgrade 与 sing-box 服务端不兼容，因此 HTTPUpgrade 只开放给 Xray 承载的协议。VMess 保留在 sing-box，兼容 sing-box 客户端 TLS 下 `auto` 自动降为 `zero` 的行为。
