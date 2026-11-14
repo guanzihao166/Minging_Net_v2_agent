@@ -220,20 +220,22 @@ func TestSevenProtocolTCPUDP(t *testing.T) {
 			tracker.Update(s)
 			defer tracker.CloseInbound(0)
 			engine := New(ctx, t.TempDir(), tracker, nil, tracker.Update, tracker.CloseInbound)
-			raw, e := Build(in, "")
+			kind, raw, e := Plan(in, "")
 			if e != nil {
 				t.Fatal(e)
 			}
-			// Only this local protocol test removes egress rejection to reach its two
-			// loopback echo fixtures. Production Build always retains private-IP blocks.
-			var config map[string]any
-			json.Unmarshal(raw, &config)
-			config["route"].(map[string]any)["rules"] = []any{}
-			if protocol == "wireguard" {
-				config["route"].(map[string]any)["rules"] = []any{map[string]any{"ip_cidr": []string{"198.18.0.1/32"}, "action": "route", "outbound": "egress", "override_address": "127.0.0.1"}}
+			if kind == coreSingBox {
+				// Only this local protocol test removes egress rejection to reach its two
+				// loopback echo fixtures. Production Build always retains private-IP blocks.
+				var config map[string]any
+				json.Unmarshal(raw, &config)
+				config["route"].(map[string]any)["rules"] = []any{}
+				if protocol == "wireguard" {
+					config["route"].(map[string]any)["rules"] = []any{map[string]any{"ip_cidr": []string{"198.18.0.1/32"}, "action": "route", "outbound": "egress", "override_address": "127.0.0.1"}}
+				}
+				raw, _ = json.Marshal(config)
 			}
-			raw, _ = json.Marshal(config)
-			core, e := engine.make(raw)
+			core, e := engine.start(kind, raw)
 			if e != nil {
 				t.Fatal(e)
 			}
