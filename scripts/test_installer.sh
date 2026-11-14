@@ -27,7 +27,7 @@ server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 sleep 1
 install_agent() {
- sh /installer-fixture/install.sh --origin https://127.0.0.1:24560 --config "$1" --download-token-file /installer-fixture/download.token
+ sh /installer-fixture/install.sh --origin https://127.0.0.1:24560 --host controller.invalid:24560 --config "$1" --download-token-file /installer-fixture/download.token
 }
 healthy() {
  count=0

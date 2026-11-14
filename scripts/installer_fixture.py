@@ -4,7 +4,7 @@ ROOT=pathlib.Path('/installer-fixture')
 TOKEN='a'*256;DOWNLOAD='b'*64
 def prepare():
  ROOT.mkdir(mode=0o700)
- subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(ROOT/'controller.key'),'-out',str(ROOT/'controller.crt'),'-days','1','-subj','/CN=Minging Installer CI','-addext','subjectAltName=IP:127.0.0.1','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(ROOT/'controller.key'),'-out',str(ROOT/'controller.crt'),'-days','1','-subj','/CN=Minging Installer CI','-addext','subjectAltName=DNS:controller.invalid','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  subprocess.run(['openssl','genpkey','-algorithm','RSA','-pkeyopt','rsa_keygen_bits:3072','-out',str(ROOT/'release.key')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  public=subprocess.check_output(['openssl','pkey','-in',str(ROOT/'release.key'),'-pubout']).decode()
  installer=pathlib.Path('/workspace/deploy/install.sh').read_text().replace('@@RELEASE_PUBLIC_KEY@@',public.strip())
@@ -15,7 +15,7 @@ def prepare():
   for name in ['minging-agent.service','minging-agent.openrc']:tar.add('/workspace/deploy/'+name,arcname=name)
  (ROOT/'SHA256SUMS').write_text(hashlib.sha256(package.read_bytes()).hexdigest()+'  '+package.name+'\n')
  subprocess.run(['openssl','dgst','-sha256','-sign',str(ROOT/'release.key'),'-out',str(ROOT/'SHA256SUMS.sig'),str(ROOT/'SHA256SUMS')],check=True)
- config={'server_id':1,'controller':'https://127.0.0.1:24560','token':TOKEN,'listen':'127.0.0.1:24442','controller_ips':['127.0.0.1/32'],'state_directory':'/var/lib/minging-agent','tls_directory':'/etc/minging-agent/tls'}
+ config={'server_id':1,'controller':'https://127.0.0.1:24560','controller_host':'controller.invalid:24560','token':TOKEN,'listen':'127.0.0.1:24442','controller_ips':['127.0.0.1/32'],'state_directory':'/var/lib/minging-agent','tls_directory':'/etc/minging-agent/tls'}
  (ROOT/'agent.json').write_text(json.dumps(config));(ROOT/'download.token').write_text(DOWNLOAD)
  config['controller']='https://127.0.0.1:24561';(ROOT/'unhealthy.json').write_text(json.dumps(config))
  for name in ['agent.json','unhealthy.json','download.token','controller.key','release.key']:os.chmod(ROOT/name,0o600)
@@ -27,6 +27,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self):self.handle_request()
  def do_POST(self):self.handle_request()
  def handle_request(self):
+  if self.headers.get('Host')!='controller.invalid:24560':self.respond(421,b'wrong Host');return
   if self.path.startswith('/agent-releases/'):
    name=self.path.split('/')[-1]
    if self.headers.get('X-Mnet-Install')!=DOWNLOAD or name not in ['SHA256SUMS','SHA256SUMS.sig','minging-agent-linux-amd64.tar.gz']:self.respond(403,b'denied');return

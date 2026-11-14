@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 umask 077
-origin= config= token_file=
+origin= host= config= token_file=
 while [ "$#" -gt 0 ]; do
  case "$1" in
   --origin) origin=$2; shift 2;;
+  --host) host=$2; shift 2;;
   --config) config=$2; shift 2;;
   --download-token-file) token_file=$2; shift 2;;
   *) echo "Unknown option: $1" >&2; exit 2;;
@@ -12,7 +13,19 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$(id -u)" = 0 ] || { echo 'Run installation as root.' >&2; exit 1; }
 case "$origin" in https://*) ;; *) echo 'HTTPS controller origin required.' >&2; exit 2;; esac
-case "$origin" in *[!a-zA-Z0-9.:/-]*) echo 'Invalid controller origin.' >&2; exit 2;; esac
+printf '%s\n' "$origin" | LC_ALL=C grep -Eq '^https://(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(:[0-9]+)?$' || { echo 'Invalid controller origin.' >&2; exit 2; }
+if [ -n "$host" ]; then
+ printf '%s\n' "$host" | LC_ALL=C grep -Eq '^(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(:[0-9]+)?$' || { echo 'Invalid controller Host.' >&2; exit 2; }
+ authority=${origin#https://}
+ case "$authority" in
+  \[*\]:*) address=${authority#\[}; address=${address%%\]*}; port=${authority##*:};;
+  \[*\]) address=${authority#\[}; address=${address%\]}; port=443;;
+  *:*) address=${authority%:*}; port=${authority##*:};;
+  *) address=$authority; port=443;;
+ esac
+ case "$host" in \[*\]*) server_name=${host#\[}; server_name=${server_name%%\]*};; *) server_name=${host%%:*};; esac
+ case "$address" in *:*) resolve_address="[$address]";; *) resolve_address=$address;; esac
+fi
 [ -f "$config" ] && [ ! -L "$config" ] && [ -f "$token_file" ] && [ ! -L "$token_file" ] || { echo 'Private configuration and download-token files required.' >&2; exit 2; }
 chmod 600 "$config" "$token_file"
 token=$(cat "$token_file")
@@ -79,6 +92,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 printf 'header = "X-Mnet-Install: %s"\n' "$token" > "$work/curl.cfg"
+printf 'noproxy = "*"\n' >> "$work/curl.cfg"
+if [ -n "$host" ]; then
+ # The URL supplies the Host/SNI identity; --resolve pins the TCP destination.
+ # Certificate validation stays enabled and no site DNS lookup is performed.
+ printf 'resolve = "%s:%s:%s"\nheader = "Host: %s"\n' "$server_name" "$port" "$resolve_address" "$host" >> "$work/curl.cfg"
+ origin="https://$host"
+fi
 unset token
 fetch() { curl --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 300 --retry 2 --config "$work/curl.cfg" -fsS "$origin/agent-releases/$1" -o "$work/$1"; }
 cat > "$work/release.pub" <<'MNET_RELEASE_KEY'

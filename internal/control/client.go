@@ -24,6 +24,7 @@ import (
 type Config struct {
 	ServerID       int64    `json:"server_id"`
 	Controller     string   `json:"controller"`
+	ControllerHost string   `json:"controller_host,omitempty"`
 	Token          string   `json:"token"`
 	Listen         string   `json:"listen"`
 	ControllerIPs  []string `json:"controller_ips"`
@@ -35,6 +36,23 @@ func (c *Config) Validate() error {
 	u, e := url.Parse(c.Controller)
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || c.ServerID < 1 || len(c.Token) != 256 || len(c.ControllerIPs) == 0 {
 		return errors.New("invalid controller configuration")
+	}
+	if c.ControllerHost != "" {
+		host, err := url.Parse("https://" + c.ControllerHost)
+		if err != nil || host.Host != c.ControllerHost || host.Hostname() == "" || host.User != nil || host.Path != "" || host.RawQuery != "" || host.Fragment != "" || strings.ContainsAny(c.ControllerHost, "\r\n\\ \t") || net.ParseIP(u.Hostname()) == nil {
+			return errors.New("controller_host requires a direct controller IP and a valid Host authority")
+		}
+		for _, r := range host.Hostname() {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-:", r)) {
+				return errors.New("invalid controller Host name")
+			}
+		}
+		if host.Port() != "" {
+			port, err := strconv.Atoi(host.Port())
+			if err != nil || port < 1 || port > 65535 {
+				return errors.New("invalid controller Host port")
+			}
+		}
 	}
 	for _, r := range c.Token {
 		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
@@ -86,7 +104,12 @@ func New(c Config) (*Client, error) {
 		prefixes = append(prefixes, x)
 	}
 	dialer := &net.Dialer{Timeout: 4 * time.Second, KeepAlive: 30 * time.Second}
-	transport := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, MaxIdleConnsPerHost: 32, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if c.ControllerHost != "" {
+		host, _ := url.Parse("https://" + c.ControllerHost)
+		tlsConfig.ServerName = host.Hostname()
+	}
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: tlsConfig, MaxIdleConnsPerHost: 32, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
 		if e != nil {
 			return nil, e
@@ -142,6 +165,9 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, raw []byte, out
 	}
 	stamp := strconv.FormatInt(time.Now().Unix(), 10)
 	req.Header.Set("Content-Type", "application/json")
+	if c.Config.ControllerHost != "" {
+		req.Host = c.Config.ControllerHost
+	}
 	req.Header.Set("X-Mnet-Server", fmt.Sprint(c.Config.ServerID))
 	req.Header.Set("X-Mnet-Time", stamp)
 	req.Header.Set("X-Mnet-Nonce", nonce)

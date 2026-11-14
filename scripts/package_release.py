@@ -26,7 +26,7 @@ else:pin.write_bytes(public)
 output=Path(args.output).resolve();output.mkdir(parents=True,exist_ok=True)
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
 dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip())
-version='0.3.1+'+commit[:12]+('.dirty' if dirty else '')
+version='0.3.2+'+commit[:12]+('.dirty' if dirty else '')
 stamp=int(subprocess.check_output(['git','show','-s','--format=%ct','HEAD'],cwd=root,text=True).strip())
 def archive(path,items):
  with path.open('wb') as target,gzip.GzipFile(fileobj=target,mode='wb',mtime=0) as zipped,tarfile.open(fileobj=zipped,mode='w') as bundle:
