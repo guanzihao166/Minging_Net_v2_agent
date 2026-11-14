@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/wire"
+	"golang.org/x/net/proxy"
 )
 
 // TestMihomoInterop drives the real mihomo client (MNET_MIHOMO=path) through
@@ -51,6 +51,56 @@ func TestMihomoInterop(t *testing.T) {
 		{"vless-reality-vision-classic-hello", "vless", func(t *testing.T, in *wire.Inbound) { reality(t, in); in.Config.Flow = "xtls-rprx-vision" }, func(in wire.Inbound) map[string]any {
 			p := vlessBase(in)
 			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
+			return p
+		}, true},
+		{"vless-reality-x25519-only", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityX25519Only = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
+			return p
+		}, false},
+		{"vless-reality-x25519-only-guard", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityX25519Only = true
+			in.Config.RealityRejectFallback = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
+			return p
+		}, false},
+		{"vless-reality-x25519-only-hybrid-client", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityX25519Only = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, true)
+			return p
+		}, false},
+		{"vless-reality-x25519-only-bad-short-id", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityX25519Only = true
+			in.Config.RealityRejectFallback = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
+			p["reality-opts"].(map[string]any)["short-id"] = "ffffffffffffffff"
+			return p
+		}, true},
+		{"vless-reality-x25519-only-bad-uuid", "vless", func(t *testing.T, in *wire.Inbound) {
+			reality(t, in)
+			in.Config.Flow = "xtls-rprx-vision"
+			in.Config.RealityX25519Only = true
+			in.Config.RealityRejectFallback = true
+		}, func(in wire.Inbound) map[string]any {
+			p := vlessBase(in)
+			p["flow"], p["tls"], p["servername"], p["reality-opts"] = "xtls-rprx-vision", true, "example.com", realityOpts(in, false)
+			p["uuid"] = "ffffffff-ffff-4fff-bfff-ffffffffffff"
 			return p
 		}, true},
 		// The fallback guard must admit mihomo exactly as REALITY does.
@@ -184,8 +234,11 @@ func TestMihomoInterop(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			proxy, _ := url.Parse(fmt.Sprint("http://127.0.0.1:", ports[c.name]))
-			client := &http.Client{Timeout: 12 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxy), DisableKeepAlives: true}}
+			dialer, err := proxy.SOCKS5("tcp", fmt.Sprint("127.0.0.1:", ports[c.name]), nil, &net.Dialer{Timeout: 12 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &http.Client{Timeout: 12 * time.Second, Transport: &http.Transport{Dial: dialer.Dial, DisableKeepAlives: true}}
 			response, e := client.Get("http://" + echo.http + "/")
 			ok := false
 			if e == nil {

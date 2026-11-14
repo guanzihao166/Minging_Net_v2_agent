@@ -26,7 +26,7 @@ else:pin.write_bytes(public)
 output=Path(args.output).resolve();output.mkdir(parents=True,exist_ok=True)
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
 dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip())
-version='0.3.2+'+commit[:12]+('.dirty' if dirty else '')
+version='0.3.3+'+commit[:12]+('.dirty' if dirty else '')
 stamp=int(subprocess.check_output(['git','show','-s','--format=%ct','HEAD'],cwd=root,text=True).strip())
 def archive(path,items):
  with path.open('wb') as target,gzip.GzipFile(fileobj=target,mode='wb',mtime=0) as zipped,tarfile.open(fileobj=zipped,mode='w') as bundle:
@@ -42,7 +42,7 @@ for arch in ['amd64','arm64']:
  for name in ['minging-agent.service','minging-agent.openrc']:items.append((name,(root/'deploy'/name).read_bytes().replace(b'\r\n',b'\n'),0o644))
  archive(output/('minging-agent-linux-'+arch+'.tar.gz'),items)
 source=[]
-for folder in ['cmd','internal','deploy','scripts','vendor']:
+for folder in ['cmd','internal','deploy','scripts','third_party','vendor']:
  for path in (root/folder).rglob('*'):
   if path.is_file() and '__pycache__' not in path.parts and (folder=='vendor' or not path.name.endswith(('.key','.pem','.db'))):
    source.append((path.relative_to(root).as_posix(),path.read_bytes(),0o755 if path.suffix in ['.sh','.openrc'] else 0o644))

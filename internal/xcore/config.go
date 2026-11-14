@@ -89,6 +89,9 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 	}
 	c := in.Config
 	security := c.EffectiveSecurity()
+	if c.RealityX25519Only && (security != "reality" || in.Secrets.RealityMldsa65Seed != "" || (in.Secrets.Decryption != "" && in.Secrets.Decryption != "none") || c.Encryption != "") {
+		return nil, fmt.Errorf("X25519-only requires REALITY without ML-DSA-65 or VLESS Encryption")
+	}
 	transport := Transport(c.Transport)
 	switch transport {
 	case "raw", "ws", "grpc", "httpupgrade":
@@ -254,13 +257,20 @@ func Build(in wire.Inbound, tlsDirectory string) ([]byte, error) {
 		if c.RealityRejectFallback {
 			// REALITY dials the guard, which authenticates the mirrored
 			// ClientHello and only then reaches the real target.
-			guard = &GuardSpec{Listen: guardAddress(in.ListenHost, in.Port, in.ID, c.RealityTarget), Target: c.RealityTarget, ServerNames: names, PrivateKey: in.Secrets.RealityPrivateKey, ShortIDs: []string{c.RealityShortID}, MaxTimeDiff: c.RealityMaxTimeDiff}
+			addressTarget := c.RealityTarget
+			if c.RealityX25519Only {
+				addressTarget += "\x00x25519-only"
+			}
+			guard = &GuardSpec{Listen: guardAddress(in.ListenHost, in.Port, in.ID, addressTarget), Target: c.RealityTarget, ServerNames: names, PrivateKey: in.Secrets.RealityPrivateKey, ShortIDs: []string{c.RealityShortID}, MaxTimeDiff: c.RealityMaxTimeDiff, X25519Only: c.RealityX25519Only}
 			target = guard.Listen
 		}
 		r := map[string]any{"target": target, "serverNames": names, "privateKey": in.Secrets.RealityPrivateKey, "shortIds": []string{c.RealityShortID},
 			// Disable client-version bounds explicitly. Protocol compatibility
 			// (including hybrid key shares) is still checked by REALITY.
 			"minClientVer": "0.0.0", "maxClientVer": ""}
+		if c.RealityX25519Only {
+			r["x25519Only"] = true
+		}
 		if c.RealityMaxTimeDiff > 0 {
 			r["maxTimeDiff"] = c.RealityMaxTimeDiff
 		}

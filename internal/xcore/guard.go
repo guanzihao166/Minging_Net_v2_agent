@@ -56,6 +56,7 @@ const (
 // fronts. The agent pins minClientVer 0.0.0 and sets no maximum, so client
 // versions are never refused and are not part of the check.
 type GuardSpec struct {
+	X25519Only  bool     `json:"x25519Only,omitempty"`
 	Listen      string   `json:"listen"`
 	Target      string   `json:"target"`
 	ServerNames []string `json:"serverNames"`
@@ -367,8 +368,8 @@ func parseClientHello(message []byte) (clientHello, bool) {
 }
 
 // authenticate repeats REALITY's server-side check: TLS 1.3, a configured SNI,
-// an X25519MLKEM768 share before any X25519 share, and a session ID that opens
-// under the shared key with an accepted short ID and time.
+// the selected hybrid or classic X25519 key-share policy, and a session ID
+// that opens under the shared key with an accepted short ID and time.
 func (g *realityGuard) authenticate(message []byte) bool {
 	h, ok := parseClientHello(message)
 	if !ok || !h.tls13 || !g.names[h.serverName] || len(h.sessionID) != 32 {
@@ -378,6 +379,7 @@ func (g *realityGuard) authenticate(message []byte) bool {
 	for _, ks := range h.keyShares {
 		if ks.group == groupHybrid && len(ks.data) == mlkemShareLen {
 			if hybrid != nil {
+				peer = nil
 				hybrid = nil
 				break
 			}
@@ -386,6 +388,7 @@ func (g *realityGuard) authenticate(message []byte) bool {
 		}
 		if ks.group == groupX25519 && len(ks.data) == 32 {
 			if peer != nil {
+				peer = nil
 				hybrid = nil
 				break
 			}
@@ -393,7 +396,10 @@ func (g *realityGuard) authenticate(message []byte) bool {
 			break
 		}
 	}
-	if hybrid == nil {
+	if hybrid == nil && !g.spec.X25519Only {
+		return false
+	}
+	if g.spec.X25519Only && peer == nil {
 		return false
 	}
 	if peer == nil {

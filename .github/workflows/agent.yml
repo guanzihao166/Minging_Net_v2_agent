@@ -11,6 +11,13 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race -tags with_gvisor ./...
+      - name: Real mihomo classic and hybrid REALITY interoperability
+        run: |
+          curl --fail --location --retry 3 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-linux-amd64-compatible-v1.19.34.gz -o /tmp/mihomo.gz
+          echo '2763f5b414527f7baf6dc57e3f82f3ab561eedf34bfd7c2f2cde1f7e592efe06  /tmp/mihomo.gz' | sha256sum -c -
+          gzip -dc /tmp/mihomo.gz > /tmp/mihomo
+          chmod 755 /tmp/mihomo
+          MNET_MIHOMO=/tmp/mihomo go test -race -tags with_gvisor -run TestMihomoInterop -count=1 ./internal/engine
       - run: go vet -tags with_gvisor ./...
       - run: go mod verify
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0

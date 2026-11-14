@@ -112,3 +112,36 @@ func TestBuildRejectsMalformedSecrets(t *testing.T) {
 		t.Fatal("malformed REALITY key accepted")
 	}
 }
+
+func TestRealityX25519OnlySurvivesCoreSerialization(t *testing.T) {
+	for _, only := range []bool{false, true} {
+		in := inbound()
+		in.Config.RealityX25519Only = only
+		raw, err := Build(in, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		core, err := Load(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiver, err := core.Inbound[0].ReceiverSettings.GetInstance()
+		if err != nil {
+			t.Fatal(err)
+		}
+		security, err := receiver.(*proxyman.ReceiverConfig).StreamSettings.SecuritySettings[0].GetInstance()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := security.(*xreality.Config).GetREALITYConfig()
+		if cfg.X25519Only != only || cfg.Clone().X25519Only != only {
+			t.Fatal("per-inbound policy lost")
+		}
+	}
+	in := inbound()
+	in.Config.RealityX25519Only = true
+	in.Secrets.RealityMldsa65Seed = strings.Repeat("A", 43)
+	if _, err := Build(in, ""); err == nil {
+		t.Fatal("post-quantum signature accepted in classic mode")
+	}
+}

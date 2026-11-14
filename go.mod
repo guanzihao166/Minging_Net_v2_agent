@@ -2,6 +2,10 @@ module github.com/guanzihao166/Minging_Net_v2_agent
 
 go 1.27.4
 
+replace github.com/xtls/reality => ./third_party/reality
+
+replace github.com/xtls/xray-core => ./third_party/xray-core
+
 require (
 	github.com/sagernet/bbolt v0.0.0-20260915102804-500ee1e84832
 	github.com/sagernet/sing v0.9.7-0.20261023115459-5dc452e537bf

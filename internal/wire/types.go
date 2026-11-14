@@ -54,6 +54,7 @@ type ClientConfig struct {
 	// RealityRejectFallback closes connections that fail REALITY
 	// authentication instead of relaying them to the target (agent 0.3.0).
 	RealityRejectFallback bool `json:"reality_reject_fallback,omitempty"`
+	RealityX25519Only     bool `json:"reality_x25519_only,omitempty"`
 }
 
 // EffectiveSecurity maps the legacy TLS flag onto the security layer name.
