@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/guanzihao166/Minging_Net_v2_agent/internal/wire"
 	"os"
 	"path/filepath"
@@ -9,6 +10,67 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCreditWindowOutboxWaitsForFinalSettlement(t *testing.T) {
+	dir := t.TempDir()
+	secret := strings.Repeat("w", 256)
+	s, err := Open(dir, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 32)
+	if err = s.Put(Entry{Request: wire.GrantRequest{ID: id}, Grant: wire.Grant{ID: id, Bytes: 1000}, State: "inflight"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Accumulate(id, 100, 200, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.QueueReport(wire.Report{ID: strings.Repeat("b", 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first wire.Report
+	json.Unmarshal(raw, &first)
+	if len(first.Grants) != 0 {
+		t.Fatal("open window entered outbox")
+	}
+	if err = s.AckReport(raw); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(dir, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	entries, err := s.Entries()
+	if err != nil || len(entries) != 1 || entries[0].State != "inflight" || entries[0].Report.Download != 200 {
+		t.Fatal("partial durable settlement lost", entries, err)
+	}
+	if err = s.Accumulate(id, 0, 50, true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = s.QueueReport(wire.Report{ID: strings.Repeat("c", 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final wire.Report
+	json.Unmarshal(raw, &final)
+	if len(final.Grants) != 1 || final.Grants[0].Upload != 100 || final.Grants[0].Download != 250 || !final.Grants[0].Closed {
+		t.Fatal("wrong cumulative usage", final)
+	}
+	if err = s.AckReport(raw); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.Entries()
+	if err != nil || len(entries) != 0 {
+		t.Fatal("closed grant not acknowledged")
+	}
+	up, down := s.Totals()
+	if up != 100 || down != 250 {
+		t.Fatal("reserved or duplicate bytes charged", up, down)
+	}
+}
 
 func TestDurableUsageAndEncryptedConfig(t *testing.T) {
 	dir := t.TempDir()

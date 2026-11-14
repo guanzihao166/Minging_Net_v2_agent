@@ -98,6 +98,13 @@ func (s *Store) Put(e Entry) error {
 	})
 }
 func (s *Store) Settle(id string, up, down int64) error {
+	return s.Accumulate(id, up, down, true)
+}
+
+// Accumulate persists actual bytes in an open credit window. Only a closed
+// window enters the report outbox, preventing acknowledgement from deleting a
+// grant while the forwarding path is still using it.
+func (s *Store) Accumulate(id string, up, down int64, closed bool) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("grants"))
 		var e Entry
@@ -107,11 +114,17 @@ func (s *Store) Settle(id string, up, down int64) error {
 		if e.State == "settled" {
 			return errors.New("grant already settled")
 		}
-		if up < 0 || down < 0 || up+down > e.Grant.Bytes {
+		if up < 0 || down < 0 || e.Report.Upload+e.Report.Download+up+down > e.Grant.Bytes {
 			return errors.New("invalid usage settlement")
 		}
-		e.State = "settled"
-		e.Report = wire.GrantReport{ID: id, Upload: up, Download: down, Closed: true}
+		if closed {
+			e.State = "settled"
+		}
+		e.Report.ID = id
+		e.Report.Upload += up
+		e.Report.Download += down
+		e.Report.Closed = closed
+		e.UpdatedAt = time.Now().UTC()
 		raw, _ := json.Marshal(e)
 		if err := b.Put([]byte(id), raw); err != nil {
 			return err

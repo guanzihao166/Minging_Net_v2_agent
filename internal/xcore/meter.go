@@ -94,7 +94,11 @@ func (h *meteredOutbound) Dispatch(ctx context.Context, link *transport.Link) {
 			in.Conn.Close()
 		}
 	})
-	flow, e := h.tracker.Admit(ctx, stop, in.Tag, in.User.Email)
+	var source netip.Addr
+	if in.Source.IsValid() && in.Source.Address.Family().IsIP() {
+		source, _ = netip.AddrFromSlice(in.Source.Address.IP())
+	}
+	flow, e := h.tracker.Admit(ctx, stop, in.Tag, in.User.Email, source)
 	if e != nil {
 		abort(link)
 		return

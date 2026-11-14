@@ -245,7 +245,7 @@ func meteredServer(t *testing.T, in wire.Inbound, controller meter.Controller) (
 	t.Cleanup(func() { store.Close() })
 	tracker := meter.New(ctx, controller, store)
 	tracker.Update(wire.Snapshot{ProtocolVersion: 1, ServerID: 1, Revision: strings.Repeat("a", 64), IssuedAt: time.Now(), ValidUntil: time.Now().Add(time.Minute), Inbounds: []wire.Inbound{in}})
-	t.Cleanup(func() { tracker.CloseInbound(0) })
+	t.Cleanup(tracker.Stop)
 	engine := New(ctx, t.TempDir(), tracker, nil, tracker.Update, tracker.CloseInbound)
 	core, raw, e := Plan(in, "")
 	if e != nil {
@@ -522,7 +522,7 @@ func TestXrayDeniesPrivateDestinations(t *testing.T) {
 	defer store.Close()
 	tracker := meter.New(ctx, &fixtureController{}, store)
 	tracker.Update(wire.Snapshot{ProtocolVersion: 1, ServerID: 1, Revision: strings.Repeat("a", 64), IssuedAt: time.Now(), ValidUntil: time.Now().Add(time.Minute), Inbounds: []wire.Inbound{in}})
-	defer tracker.CloseInbound(0)
+	defer tracker.Stop()
 	raw, e := xcore.Build(in, "")
 	if e != nil {
 		t.Fatal(e)

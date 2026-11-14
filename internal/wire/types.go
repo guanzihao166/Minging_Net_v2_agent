@@ -110,6 +110,7 @@ type Lease struct {
 	InboundID int64  `json:"inbound_id"`
 	Epoch     int64  `json:"epoch"`
 	Close     bool   `json:"close"`
+	SourceIP  string `json:"source_ip,omitempty"`
 }
 type LeaseResult struct {
 	ID        string    `json:"id"`

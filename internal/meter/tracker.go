@@ -38,13 +38,22 @@ type Tracker struct {
 	work     sync.WaitGroup
 }
 type flow struct {
-	tracker *Tracker
-	ctx     context.Context
-	cancel  context.CancelFunc
-	lease   wire.Lease
-	until   atomic.Int64
-	closer  io.Closer
-	once    sync.Once
+	tracker        *Tracker
+	ctx            context.Context
+	cancel         context.CancelFunc
+	lease          wire.Lease
+	until          atomic.Int64
+	closer         io.Closer
+	once           sync.Once
+	creditMu       sync.Mutex
+	credits        []*credit
+	tickets        map[string]creditTicket
+	fetching       bool
+	fetchDone      chan struct{}
+	fetchErr       error
+	creditSize     int64
+	creditMax      int64
+	ticketSequence uint64
 }
 
 func New(ctx context.Context, c Controller, s *journal.Store) *Tracker {
@@ -130,12 +139,17 @@ func (t *Tracker) admitUser(ctx context.Context, c io.Closer, inbound, user stri
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	lease := wire.Lease{ID: id, UserID: u.ID, InboundID: iid, Epoch: u.Epoch}
+	if source.IsValid() {
+		lease.SourceIP = source.Unmap().String()
+	}
 	reply, e := t.client.Lease(ctx, lease)
 	if e != nil {
 		cancel()
 		return nil, e
 	}
-	f := &flow{tracker: t, ctx: ctx, cancel: cancel, lease: lease, closer: c}
+	f := &flow{tracker: t, ctx: ctx, cancel: cancel, lease: lease, closer: c, tickets: map[string]creditTicket{}}
+	f.creditMax = min(int64(1048576), max(int64(65536), int64(u.SpeedMbps)*125000/5))
+	f.creditSize = 4096
 	f.until.Store(reply.ExpiresAt.Add(-time.Second).UnixNano())
 	if !t.active(iid, u.ID, u.Epoch) {
 		f.close()
@@ -181,6 +195,7 @@ func (f *flow) close() {
 	f.once.Do(func() {
 		f.cancel()
 		f.closer.Close()
+		f.retireCredits()
 		t := f.tracker
 		t.mu.Lock()
 		delete(t.flows, f.lease.ID)
@@ -210,13 +225,20 @@ func (t *Tracker) CloseInbound(id int64) {
 func (t *Tracker) Connections() []wire.UserConnections {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	counts := map[int64]int{}
+	ips := map[int64]map[string]bool{}
 	for _, f := range t.flows {
-		counts[f.lease.UserID]++
+		if ips[f.lease.UserID] == nil {
+			ips[f.lease.UserID] = map[string]bool{}
+		}
+		key := f.lease.SourceIP
+		if key == "" {
+			key = "legacy:" + f.lease.ID
+		}
+		ips[f.lease.UserID][key] = true
 	}
 	out := []wire.UserConnections{}
-	for id, n := range counts {
-		out = append(out, wire.UserConnections{UserID: id, Count: n})
+	for id, addresses := range ips {
+		out = append(out, wire.UserConnections{UserID: id, Count: len(addresses)})
 	}
 	return out
 }
@@ -229,8 +251,12 @@ type Flow struct{ f *flow }
 
 // Admit leases a connection for user (the decimal user ID) on inbound
 // ("inbound-<id>"). Closing c must interrupt the connection's transfers.
-func (t *Tracker) Admit(ctx context.Context, c io.Closer, inbound, user string) (*Flow, error) {
-	f, e := t.admitUser(ctx, c, inbound, user, netip.Addr{})
+func (t *Tracker) Admit(ctx context.Context, c io.Closer, inbound, user string, addresses ...netip.Addr) (*Flow, error) {
+	var source netip.Addr
+	if len(addresses) > 0 {
+		source = addresses[0]
+	}
+	f, e := t.admitUser(ctx, c, inbound, user, source)
 	if e != nil {
 		return nil, e
 	}
@@ -253,9 +279,9 @@ func (x *Flow) Close() { x.f.close() }
 
 // Context is cancelled when the lease ends.
 func (x *Flow) Context() context.Context { return x.f.ctx }
-func (f *flow) permit(n int) (result wire.Grant, failure error) {
+func (f *flow) fetchGrant(n int) (result wire.Grant, failure error) {
 	t := f.tracker
-	if n < 1 || n > 65536 || !t.active(f.lease.InboundID, f.lease.UserID, f.lease.Epoch) || time.Now().UnixNano() >= f.until.Load() {
+	if n < 1 || n > 1048576 || !t.active(f.lease.InboundID, f.lease.UserID, f.lease.Epoch) || time.Now().UnixNano() >= f.until.Load() {
 		return wire.Grant{}, errors.New("lease inactive")
 	}
 	id, e := control.RandomID()
@@ -324,14 +350,6 @@ func (f *flow) permit(n int) (result wire.Grant, failure error) {
 		return g, errors.New("grant expired in transit")
 	}
 	return g, nil
-}
-func (f *flow) settle(g wire.Grant, up, down int64) error {
-	e := f.tracker.store.Settle(g.ID, up, down)
-	if e != nil {
-		f.tracker.failed.Store(true)
-		f.close()
-	}
-	return e
 }
 func (t *Tracker) RoutedConnection(ctx context.Context, c net.Conn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) net.Conn {
 	// Transfer the core's handshake cache before copy/close goroutines start.

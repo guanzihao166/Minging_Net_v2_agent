@@ -93,15 +93,19 @@ func TestPublicSharedLimits(t *testing.T) {
 			t.Fatal(e)
 		}
 		second, e := dial(1)
-		if e == nil {
-			defer second.Close()
-			second.SetReadDeadline(time.Now().Add(4 * time.Second))
-			got, _ := io.ReadAll(io.LimitReader(second, 1))
-			if len(got) > 0 {
-				t.Fatal("second agent bypassed shared connection cap")
-			}
+		if e != nil {
+			t.Fatal(e)
 		}
-		t.Log("agent A served active flow; agent B rejected simultaneous second flow")
+		defer second.Close()
+		secondResponse, e := http.ReadResponse(bufio.NewReader(second), nil)
+		if e != nil {
+			t.Fatal("independent server IP allowance", e)
+		}
+		defer secondResponse.Body.Close()
+		if _, e = io.ReadFull(secondResponse.Body, make([]byte, 1)); e != nil {
+			t.Fatal(e)
+		}
+		t.Log("both servers admitted the source IP using their independent IP allowances")
 		return
 	}
 	if mode != "rate" && mode != "quota" && mode != "baseline" {

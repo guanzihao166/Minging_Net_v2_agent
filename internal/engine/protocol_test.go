@@ -51,12 +51,17 @@ import (
 type fixtureController struct {
 	mu             sync.Mutex
 	leases, grants int
+	sources        map[string]bool
 }
 
 func (c *fixtureController) Lease(ctx context.Context, x wire.Lease) (wire.LeaseResult, error) {
 	c.mu.Lock()
 	if !x.Close {
 		c.leases++
+		if c.sources == nil {
+			c.sources = map[string]bool{}
+		}
+		c.sources[x.SourceIP] = true
 	}
 	c.mu.Unlock()
 	return wire.LeaseResult{ID: x.ID, ExpiresAt: time.Now().Add(25 * time.Second)}, nil
@@ -218,7 +223,7 @@ func TestSevenProtocolTCPUDP(t *testing.T) {
 			controller := &fixtureController{}
 			tracker := meter.New(ctx, controller, store)
 			tracker.Update(s)
-			defer tracker.CloseInbound(0)
+			defer tracker.Stop()
 			engine := New(ctx, t.TempDir(), tracker, nil, tracker.Update, tracker.CloseInbound)
 			kind, raw, e := Plan(in, "")
 			if e != nil {
@@ -296,6 +301,12 @@ func TestSevenProtocolTCPUDP(t *testing.T) {
 				t.Fatalf("UDP roundtrip: %v %q", e, buffer[:n])
 			}
 			tracker.CloseInbound(0)
+			controller.mu.Lock()
+			missingSource := controller.sources[""] || len(controller.sources) == 0
+			controller.mu.Unlock()
+			if missingSource {
+				t.Fatal("protocol did not supply its observed source IP")
+			}
 			time.Sleep(20 * time.Millisecond)
 			up, down := store.Totals()
 			if up < int64(len(message)) || down < int64(len(message)) {

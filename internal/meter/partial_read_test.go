@@ -50,6 +50,7 @@ func TestPartialGrantPreservesReadBytesAndEOF(t *testing.T) {
 	if e != nil || string(result) != "stream-preserved" {
 		t.Fatalf("TCP stream lost bytes: %q, %v", result, e)
 	}
+	tracker.Stop()
 	entries, e := store.Entries()
 	if e != nil {
 		t.Fatal(e)
