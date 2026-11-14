@@ -13,6 +13,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,9 +86,9 @@ func (t *Tracker) active(iid, uid, epoch int64) bool {
 	}
 	return false
 }
-func (t *Tracker) lookup(m adapter.InboundContext) (int64, wire.User, bool) {
-	iid, e := strconv.ParseInt(strings.TrimPrefix(m.Inbound, "inbound-"), 10, 64)
-	if e != nil {
+func (t *Tracker) lookup(inbound, user string, source netip.Addr) (int64, wire.User, bool) {
+	iid, e := strconv.ParseInt(strings.TrimPrefix(inbound, "inbound-"), 10, 64)
+	if e != nil || !strings.HasPrefix(inbound, "inbound-") {
 		return 0, wire.User{}, false
 	}
 	t.mu.RLock()
@@ -100,9 +101,9 @@ func (t *Tracker) lookup(m adapter.InboundContext) (int64, wire.User, bool) {
 			continue
 		}
 		for _, u := range i.Users {
-			match := m.User == strconv.FormatInt(u.ID, 10)
+			match := user != "" && user == strconv.FormatInt(u.ID, 10)
 			if i.Protocol == "wireguard" {
-				match = m.Source.Addr.String() == u.Credential.Address
+				match = source.IsValid() && source.Unmap().String() == u.Credential.Address
 			}
 			if match && u.ExpiresAt.After(time.Now()) {
 				return iid, u, true
@@ -112,11 +113,14 @@ func (t *Tracker) lookup(m adapter.InboundContext) (int64, wire.User, bool) {
 	return 0, wire.User{}, false
 }
 func (t *Tracker) admit(ctx context.Context, c io.Closer, m adapter.InboundContext) (*flow, error) {
+	return t.admitUser(ctx, c, m.Inbound, m.User, m.Source.Addr)
+}
+func (t *Tracker) admitUser(ctx context.Context, c io.Closer, inbound, user string, source netip.Addr) (*flow, error) {
 	if !t.begin() {
 		return nil, net.ErrClosed
 	}
 	defer t.work.Done()
-	iid, u, ok := t.lookup(m)
+	iid, u, ok := t.lookup(inbound, user, source)
 	if !ok {
 		return nil, errors.New("inactive user")
 	}
@@ -217,6 +221,38 @@ func (t *Tracker) Connections() []wire.UserConnections {
 	return out
 }
 func (t *Tracker) Healthy() bool { return !t.failed.Load() }
+
+// Flow is one admitted connection of a core that does not use the sing-box
+// router tracker. Every byte must be permitted before it is forwarded and
+// settled afterwards, exactly as the sing-box connection wrappers do.
+type Flow struct{ f *flow }
+
+// Admit leases a connection for user (the decimal user ID) on inbound
+// ("inbound-<id>"). Closing c must interrupt the connection's transfers.
+func (t *Tracker) Admit(ctx context.Context, c io.Closer, inbound, user string) (*Flow, error) {
+	f, e := t.admitUser(ctx, c, inbound, user, netip.Addr{})
+	if e != nil {
+		return nil, e
+	}
+	return &Flow{f}, nil
+}
+
+// Enter registers in-flight work so Stop waits for its settlement; callers
+// must call Leave when Enter returned true.
+func (t *Tracker) Enter() bool { return t.begin() }
+func (t *Tracker) Leave()      { t.work.Done() }
+
+// Permit reserves at most n bytes (1..65536) from the controller.
+func (x *Flow) Permit(n int) (wire.Grant, error) { return x.f.permit(n) }
+
+// Settle durably records the bytes actually forwarded under grant g.
+func (x *Flow) Settle(g wire.Grant, up, down int64) error { return x.f.settle(g, up, down) }
+
+// Close ends the lease and interrupts the connection.
+func (x *Flow) Close() { x.f.close() }
+
+// Context is cancelled when the lease ends.
+func (x *Flow) Context() context.Context { return x.f.ctx }
 func (f *flow) permit(n int) (result wire.Grant, failure error) {
 	t := f.tracker
 	if n < 1 || n > 65536 || !t.active(f.lease.InboundID, f.lease.UserID, f.lease.Epoch) || time.Now().UnixNano() >= f.until.Load() {
