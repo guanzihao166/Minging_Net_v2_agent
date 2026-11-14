@@ -1,16 +1,23 @@
 #!/bin/sh
 set -eu
 umask 077
-origin= host= config= token_file=
+origin= host= config= token_file= download_source=auto
+release_base='@@RELEASE_DOWNLOAD_BASE@@'
+phase='检查安装参数'
+say() { printf '\n%s\n' "$*"; }
+stage() { phase=$2; say "[$1/7] $phase"; }
 while [ "$#" -gt 0 ]; do
  case "$1" in
   --origin) origin=$2; shift 2;;
   --host) host=$2; shift 2;;
   --config) config=$2; shift 2;;
   --download-token-file) token_file=$2; shift 2;;
+  --download-source) download_source=$2; shift 2;;
   *) echo "Unknown option: $1" >&2; exit 2;;
  esac
 done
+case "$download_source" in auto|github|controller) ;; *) echo 'Download source must be auto, github or controller.' >&2; exit 2;; esac
+stage 1 '检查系统、架构和安装依赖'
 [ "$(id -u)" = 0 ] || { echo 'Run installation as root.' >&2; exit 1; }
 case "$origin" in https://*) ;; *) echo 'HTTPS controller origin required.' >&2; exit 2;; esac
 printf '%s\n' "$origin" | LC_ALL=C grep -Eq '^https://(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(:[0-9]+)?$' || { echo 'Invalid controller origin.' >&2; exit 2; }
@@ -36,6 +43,7 @@ case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then init=systemd
 elif command -v rc-service >/dev/null 2>&1; then init=openrc
 else echo 'An active systemd or OpenRC installation is required.' >&2; exit 2; fi
+say "系统：Linux $arch；服务管理：$init；下载策略：$download_source"
 missing=
 for command in curl openssl tar gzip sha256sum; do
  if ! command -v "$command" >/dev/null 2>&1; then
@@ -73,6 +81,10 @@ service_restart() {
 cleanup() {
  code=$?
  trap - EXIT HUP INT TERM
+ if [ "$code" != 0 ]; then
+  say "安装未完成：$phase（退出码 $code）。"
+  [ "$code" != 130 ] || say '安装已被中断。重新运行安装命令可重试；下载凭据有效期为 15 分钟。'
+ fi
  if [ "$changed" = 1 ] && [ "$success" != 1 ]; then
   if [ "$init" = systemd ]; then systemctl stop minging-agent || true; else rc-service minging-agent stop || true; fi
   if [ -n "$previous" ]; then
@@ -100,17 +112,45 @@ if [ -n "$host" ]; then
  origin="https://$host"
 fi
 unset token
-fetch() { curl --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 300 --retry 2 --config "$work/curl.cfg" -fsS "$origin/agent-releases/$1" -o "$work/$1"; }
+controller_fetch() {
+ curl --disable --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 300 --retry 1 --retry-max-time 330 --speed-limit 1024 --speed-time 25 --config "$work/curl.cfg" --fail --show-error --progress-bar "$origin/agent-releases/$1" -o "$work/$1" --write-out '\n主控下载完成：%{size_download} 字节，平均 %{speed_download} 字节/秒，用时 %{time_total} 秒\n'
+}
+package_matches() { (cd "$work" && sha256sum -c selected.sum >/dev/null 2>&1); }
+github_fetch() {
+ # Do not load the controller curl config: neither its installation token nor
+ # its Host/resolve settings may follow the public GitHub/CDN request.
+ curl --disable --noproxy '*' --proto '=https' --proto-redir '=https' --tlsv1.2 --location --connect-timeout 10 --max-time 180 --retry 1 --retry-max-time 210 --speed-limit 1024 --speed-time 20 --fail --show-error --progress-bar "$release_base/$asset" -o "$work/$asset" --write-out '\nGitHub 下载结束：%{size_download} 字节，平均 %{speed_download} 字节/秒，用时 %{time_total} 秒\n'
+}
 cat > "$work/release.pub" <<'MNET_RELEASE_KEY'
 @@RELEASE_PUBLIC_KEY@@
 MNET_RELEASE_KEY
-fetch SHA256SUMS
-fetch SHA256SUMS.sig
+stage 2 '获取发行清单并验证发布签名'
+controller_fetch SHA256SUMS
+controller_fetch SHA256SUMS.sig
 openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS"
 asset="minging-agent-linux-$arch.tar.gz"
-fetch "$asset"
 awk -v name="$asset" '$2==name {print}' "$work/SHA256SUMS" > "$work/selected.sum"
 [ "$(wc -l < "$work/selected.sum")" -eq 1 ] || { echo 'Release checksum missing.' >&2; exit 1; }
+stage 3 "下载预编译 Agent（$arch），下方显示实时进度"
+downloaded=0
+if [ "$download_source" != controller ]; then
+ say '正在从 GitHub Release 下载；无需在服务器编译。'
+ if github_fetch && package_matches; then
+  downloaded=1
+  say 'GitHub 下载成功，文件摘要与签名清单一致。'
+ else
+  say 'GitHub 下载失败或文件摘要不匹配。'
+  [ "$download_source" != github ] || { echo 'Retry with --download-source controller.' >&2; exit 1; }
+  say '自动切换到主控下载。线路较慢时请等待，进度会持续显示。'
+ fi
+fi
+if [ "$downloaded" = 0 ]; then
+ if ! controller_fetch "$asset"; then
+  say '主控下载失败：请检查网络；HTTP 401 表示下载凭据已过期，请从后台重新获取安装命令。'
+  exit 1
+ fi
+fi
+stage 4 '校验安装包、解压并检查配置'
 (cd "$work" && sha256sum -c selected.sum)
 digest=$(sha256sum "$work/$asset" | cut -d ' ' -f 1)
 destination="$base/releases/$digest"
@@ -135,6 +175,7 @@ if [ -L "$base/current" ]; then previous=$(readlink "$base/current"); case "$pre
 if [ "$init" = systemd ]; then service_file=/etc/systemd/system/minging-agent.service; else service_file=/etc/init.d/minging-agent; fi
 if [ -f /etc/minging-agent/agent.json ]; then cp /etc/minging-agent/agent.json "$work/old-config"; fi
 if [ -f "$service_file" ]; then cp "$service_file" "$work/old-service"; fi
+stage 5 '安装服务并启动 Agent'
 changed=1
 if [ -n "$previous" ]; then
  if [ "$init" = systemd ]; then systemctl stop minging-agent; else rc-service minging-agent stop; fi
@@ -154,12 +195,20 @@ else
  rc-update add minging-agent default
 fi
 service_restart
+stage 6 '等待主控确认连接健康（最多 30 秒）'
 attempt=0
 while [ "$attempt" -lt 30 ]; do
  if "$base/current/minging-agent" --status --config /etc/minging-agent/agent.json >/dev/null 2>&1; then success=1; break; fi
- attempt=$((attempt+1)); sleep 1
+ attempt=$((attempt+1))
+ if [ "$((attempt % 5))" = 0 ]; then say "仍在等待主控确认：$attempt/30 秒……"; fi
+ sleep 1
 done
-[ "$success" = 1 ] || { echo 'Fresh controller health acknowledgement was not received.' >&2; exit 1; }
+[ "$success" = 1 ] || {
+ say '尚未收到主控健康确认，请检查主控 IP、站点域名、令牌和防火墙。'
+ if [ "$init" = systemd ]; then say '查看日志：journalctl -u minging-agent -n 50 --no-pager'; else say '查看服务：rc-service minging-agent status'; fi
+ exit 1
+}
+stage 7 '安装完成，主控已确认 Agent 在线'
 echo 'Minging Agent installed; controller acknowledgement verified.'
 echo 'Configuration: /etc/minging-agent/agent.json (0600); state: /var/lib/minging-agent.'
 echo 'Keep the previous release for rollback. Renew local TLS certificates before expiry.'

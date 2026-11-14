@@ -27,6 +27,8 @@ REALITY 可选“拒绝未认证回落”（0.3.0）：入站的 target 改为�
 
 ## 安装与升级
 
+0.3.4 起安装器优先从公开 GitHub Release 下载 amd64 / arm64 预编译签名包，无需服务器编译；下载失败或摘要不匹配时自动回退主控。清单始终由主控提供并用固定发布公钥校验，GitHub 请求不携带主控令牌。安装分七阶段显示进度、下载速度与主控确认等待状态；可追加 `--download-source controller` 强制使用主控，或 `--download-source github` 在 GitHub 失败时直接退出。
+
 在管理端创建服务器，点击“安装”，在对应服务器 root 终端运行生成的命令。下载凭据 15 分钟有效且绑定服务器 IP；命令只用于对应节点。安装器验证 RSA-SHA256 签名与 SHA256 摘要，校验配置，使用独立非 root 账号启动，等待主控确认健康，失败则恢复前一个二进制和配置。
 
 支持 amd64 / arm64 静态二进制，systemd（Ubuntu / Debian / CentOS 系）和 OpenRC（Alpine）。依赖 curl、CA 证书、openssl、tar、gzip、sha256sum；缺失时只安装这些基础包。所有协议监听端口至少 1024；WireGuard 使用用户态栈，无需 NET_ADMIN。服务使用 160 MiB Go 内存软目标，systemd 额外设置 240 MiB 上限，可按容量规划调整。

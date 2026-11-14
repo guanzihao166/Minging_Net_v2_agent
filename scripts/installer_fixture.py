@@ -4,11 +4,12 @@ ROOT=pathlib.Path('/installer-fixture')
 TOKEN='a'*256;DOWNLOAD='b'*64
 def prepare():
  ROOT.mkdir(mode=0o700)
- subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(ROOT/'controller.key'),'-out',str(ROOT/'controller.crt'),'-days','1','-subj','/CN=Minging Installer CI','-addext','subjectAltName=DNS:controller.invalid','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(ROOT/'controller.key'),'-out',str(ROOT/'controller.crt'),'-days','1','-subj','/CN=Minging Installer CI','-addext','subjectAltName=DNS:controller.invalid,DNS:packages.invalid','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  subprocess.run(['openssl','genpkey','-algorithm','RSA','-pkeyopt','rsa_keygen_bits:3072','-out',str(ROOT/'release.key')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  public=subprocess.check_output(['openssl','pkey','-in',str(ROOT/'release.key'),'-pubout']).decode()
- installer=pathlib.Path('/workspace/deploy/install.sh').read_text().replace('@@RELEASE_PUBLIC_KEY@@',public.strip())
+ installer=pathlib.Path('/workspace/deploy/install.sh').read_text().replace('@@RELEASE_PUBLIC_KEY@@',public.strip()).replace('@@RELEASE_DOWNLOAD_BASE@@','https://packages.invalid:24560/public-release/v0.3.4')
  (ROOT/'install.sh').write_text(installer)
+ (ROOT/'public-mode').write_text('ok')
  package=ROOT/'minging-agent-linux-amd64.tar.gz'
  with tarfile.open(package,'w:gz') as tar:
   tar.add('/workspace/.local/runtime/minging-agent-amd64',arcname='minging-agent')
@@ -27,10 +28,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self):self.handle_request()
  def do_POST(self):self.handle_request()
  def handle_request(self):
+  if self.path.startswith('/public-release/v0.3.4/'):
+   # A separate public origin must never receive the controller credential
+   # or the controller Host override, even when following a CDN redirect.
+   if self.headers.get('X-Mnet-Install') or self.headers.get('Host')!='packages.invalid:24560':
+    (ROOT/'credential-leak').touch();self.respond(403,b'credential leak');return
+   mode=(ROOT/'public-mode').read_text().strip()
+   if mode=='unavailable':self.respond(404,b'not published');return
+   if mode=='corrupt':self.respond(200,b'corrupt public package');return
+   if self.path.endswith('/minging-agent-linux-amd64.tar.gz'):
+    self.send_response(302);self.send_header('Location','https://packages.invalid:24560/public-release/v0.3.4/cdn-package');self.send_header('Content-Length','0');self.end_headers();return
+   (ROOT/'public-downloaded').touch()
+   self.respond(200,(ROOT/'minging-agent-linux-amd64.tar.gz').read_bytes());return
   if self.headers.get('Host')!='controller.invalid:24560':self.respond(421,b'wrong Host');return
   if self.path.startswith('/agent-releases/'):
    name=self.path.split('/')[-1]
    if self.headers.get('X-Mnet-Install')!=DOWNLOAD or name not in ['SHA256SUMS','SHA256SUMS.sig','minging-agent-linux-amd64.tar.gz']:self.respond(403,b'denied');return
+   if name=='minging-agent-linux-amd64.tar.gz':(ROOT/'controller-downloaded').touch()
    self.respond(200,(ROOT/name).read_bytes());return
   raw=self.rfile.read(int(self.headers.get('Content-Length','0')))
   message='mnet-agent-v1\n'+self.command+'\n'+self.path+'\n'+self.headers.get('X-Mnet-Time','')+'\n'+self.headers.get('X-Mnet-Nonce','')+'\n'+hashlib.sha256(raw).hexdigest()

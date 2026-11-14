@@ -26,6 +26,15 @@ python3 /workspace/scripts/installer_fixture.py serve >/installer-fixture/contro
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 sleep 1
+# Route only the fixture's public download hostname to its local HTTPS server.
+# The installer still uses its independent public curl invocation, with a
+# redirect to a CDN fixture; no real GitHub request is made in these tests.
+real_curl=$(command -v curl)
+mkdir /installer-fixture/bin
+printf '#!/bin/sh\nexec "%s" --disable --resolve packages.invalid:24560:127.0.0.1 "$@"\n' "$real_curl" >/installer-fixture/bin/curl
+chmod 755 /installer-fixture/bin/curl
+PATH=/installer-fixture/bin:$PATH
+export PATH
 install_agent() {
  sh /installer-fixture/install.sh --origin https://127.0.0.1:24560 --host controller.invalid:24560 --config "$1" --download-token-file /installer-fixture/download.token
 }
@@ -37,7 +46,12 @@ healthy() {
  done
  return 1
 }
-install_agent /installer-fixture/agent.json
+install_agent /installer-fixture/agent.json > /installer-fixture/first-install.log 2>&1 || { cat /installer-fixture/first-install.log; exit 1; }
+cat /installer-fixture/first-install.log
+[ -f /installer-fixture/public-downloaded ]
+[ ! -f /installer-fixture/controller-downloaded ]
+grep -F '[3/7]' /installer-fixture/first-install.log
+grep -F '[7/7]' /installer-fixture/first-install.log
 healthy
 original=$(readlink /opt/minging-agent/current)
 config_hash=$(sha256sum /etc/minging-agent/agent.json | cut -d ' ' -f1)
@@ -47,6 +61,21 @@ config_hash=$(sha256sum /etc/minging-agent/agent.json | cut -d ' ' -f1)
 install_agent /installer-fixture/agent.json
 healthy
 [ "$(readlink /opt/minging-agent/current)" = "$original" ]
+# A failed public download and a corrupted public asset must both fall back
+# to the authenticated controller and preserve the signed digest check.
+printf unavailable >/installer-fixture/public-mode
+install_agent /installer-fixture/agent.json > /installer-fixture/fallback.log 2>&1 || { cat /installer-fixture/fallback.log; exit 1; }
+[ -f /installer-fixture/controller-downloaded ]
+grep -F '自动切换到主控下载' /installer-fixture/fallback.log
+healthy
+rm /installer-fixture/controller-downloaded
+printf corrupt >/installer-fixture/public-mode
+install_agent /installer-fixture/agent.json
+[ -f /installer-fixture/controller-downloaded ]
+healthy
+printf ok >/installer-fixture/public-mode
+sh /installer-fixture/install.sh --origin https://127.0.0.1:24560 --host controller.invalid:24560 --config /installer-fixture/agent.json --download-token-file /installer-fixture/download.token --download-source controller
+healthy
 cp /installer-fixture/SHA256SUMS.sig /installer-fixture/valid.sig
 printf 'tampered-signature' >/installer-fixture/SHA256SUMS.sig
 if install_agent /installer-fixture/agent.json; then echo 'Invalid release signature accepted' >&2; exit 1; fi
@@ -57,6 +86,7 @@ printf 'tampered-package' >>/installer-fixture/minging-agent-linux-amd64.tar.gz
 if install_agent /installer-fixture/agent.json; then echo 'Invalid package digest accepted' >&2; exit 1; fi
 cp /installer-fixture/valid.tar.gz /installer-fixture/minging-agent-linux-amd64.tar.gz
 healthy
+[ ! -f /installer-fixture/credential-leak ]
 if install_agent /installer-fixture/unhealthy.json; then echo 'Unhealthy activation accepted' >&2; exit 1; fi
 [ "$(readlink /opt/minging-agent/current)" = "$original" ]
 [ "$(sha256sum /etc/minging-agent/agent.json | cut -d ' ' -f1)" = "$config_hash" ]
@@ -68,4 +98,4 @@ else
  rc-service minging-agent restart;healthy;rc-service minging-agent stop
  if rc-service minging-agent status; then exit 1; fi
 fi
-echo 'PASS: full installer, idempotent upgrade, permissions, signature/digest rejection, health rollback and real supervisor lifecycle'
+echo 'PASS: GitHub/CDN download, no credential leakage, fallback on failure/corruption, controller-only override, progress, idempotent upgrade, permissions, signature/digest rejection, health rollback and supervisor lifecycle'
