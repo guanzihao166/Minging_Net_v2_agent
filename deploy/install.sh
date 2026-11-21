@@ -124,23 +124,38 @@ package_matches() { (cd "$work" && sha256sum -c selected.sum >/dev/null 2>&1); }
 github_fetch() {
  # Do not load the controller curl config: neither its installation token nor
  # its Host/resolve settings may follow the public GitHub/CDN request.
- curl --disable --noproxy '*' --proto '=https' --proto-redir '=https' --tlsv1.2 --location --connect-timeout 10 --max-time 180 --retry 1 --retry-max-time 210 --speed-limit 1024 --speed-time 20 --fail --show-error --progress-bar "$release_base/$asset" -o "$work/$asset" --write-out '\nGitHub 下载结束：%{size_download} 字节，平均 %{speed_download} 字节/秒，用时 %{time_total} 秒\n'
+ curl --disable --noproxy '*' --proto '=https' --proto-redir '=https' --tlsv1.2 --location --connect-timeout 10 --max-time 180 --retry 1 --retry-max-time 210 --speed-limit 1024 --speed-time 20 --fail --show-error --progress-bar "$release_base/$1" -o "$work/$1" --write-out '\nGitHub 下载结束：%{size_download} 字节，平均 %{speed_download} 字节/秒，用时 %{time_total} 秒\n'
 }
 cat > "$work/release.pub" <<'MNET_RELEASE_KEY'
 @@RELEASE_PUBLIC_KEY@@
 MNET_RELEASE_KEY
 stage 2 '获取发行清单并验证发布签名'
-controller_fetch SHA256SUMS
-controller_fetch SHA256SUMS.sig
-openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS"
 asset="minging-agent-linux-$arch.tar.gz"
+manifest_verified=0
+if [ "$download_source" != controller ]; then
+ say '正在从 GitHub Release 获取签名清单。'
+ if github_fetch SHA256SUMS && github_fetch SHA256SUMS.sig && openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS"; then
+  manifest_verified=1
+  say 'GitHub 签名清单验证成功。'
+ else
+  rm -f "$work/SHA256SUMS" "$work/SHA256SUMS.sig"
+  say 'GitHub 清单不可用或签名无效。'
+  [ "$download_source" != github ] || { echo 'GitHub release manifest verification failed.' >&2; exit 1; }
+  say '自动切换到主控获取签名清单。'
+ fi
+fi
+if [ "$manifest_verified" = 0 ]; then
+ controller_fetch SHA256SUMS
+ controller_fetch SHA256SUMS.sig
+ openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS"
+fi
 awk -v name="$asset" '$2==name {print}' "$work/SHA256SUMS" > "$work/selected.sum"
 [ "$(wc -l < "$work/selected.sum")" -eq 1 ] || { echo 'Release checksum missing.' >&2; exit 1; }
 stage 3 "下载预编译 Agent（$arch），下方显示实时进度"
 downloaded=0
 if [ "$download_source" != controller ]; then
  say '正在从 GitHub Release 下载；无需在服务器编译。'
- if github_fetch && package_matches; then
+ if github_fetch "$asset" && package_matches; then
   downloaded=1
   say 'GitHub 下载成功，文件摘要与签名清单一致。'
  else

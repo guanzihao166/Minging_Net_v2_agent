@@ -9,7 +9,7 @@ def prepare():
  public=subprocess.check_output(['openssl','pkey','-in',str(ROOT/'release.key'),'-pubout']).decode()
  installer=pathlib.Path('/workspace/deploy/install.sh').read_text().replace('@@RELEASE_PUBLIC_KEY@@',public.strip()).replace('@@RELEASE_DOWNLOAD_BASE@@','https://packages.invalid:24560/public-release/v0.3.4')
  (ROOT/'install.sh').write_text(installer)
- (ROOT/'public-mode').write_text('ok')
+ (ROOT/'public-mode').write_text('ok');(ROOT/'controller-mode').write_text('ok')
  package=ROOT/'minging-agent-linux-amd64.tar.gz'
  with tarfile.open(package,'w:gz') as tar:
   tar.add('/workspace/.local/runtime/minging-agent-amd64',arcname='minging-agent')
@@ -35,8 +35,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     (ROOT/'credential-leak').touch();self.respond(403,b'credential leak');return
    mode=(ROOT/'public-mode').read_text().strip()
    if mode=='unavailable':self.respond(404,b'not published');return
+   name=self.path.rsplit('/',1)[-1]
+   if name in ['SHA256SUMS','SHA256SUMS.sig']:
+    (ROOT/'public-manifest-downloaded').touch()
+    self.respond(200,(ROOT/name).read_bytes());return
    if mode=='corrupt':self.respond(200,b'corrupt public package');return
-   if self.path.endswith('/minging-agent-linux-amd64.tar.gz'):
+   if name=='minging-agent-linux-amd64.tar.gz':
     self.send_response(302);self.send_header('Location','https://packages.invalid:24560/public-release/v0.3.4/cdn-package');self.send_header('Content-Length','0');self.end_headers();return
    (ROOT/'public-downloaded').touch()
    self.respond(200,(ROOT/'minging-agent-linux-amd64.tar.gz').read_bytes());return
@@ -44,6 +48,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
   if self.path.startswith('/agent-releases/'):
    name=self.path.split('/')[-1]
    if self.headers.get('X-Mnet-Install')!=DOWNLOAD or name not in ['SHA256SUMS','SHA256SUMS.sig','minging-agent-linux-amd64.tar.gz']:self.respond(403,b'denied');return
+   if name in ['SHA256SUMS','SHA256SUMS.sig']:
+    (ROOT/'controller-manifest-requested').touch()
+    if (ROOT/'controller-mode').read_text().strip()=='deny-manifests':self.respond(403,b'manifest denied');return
    if name=='minging-agent-linux-amd64.tar.gz':(ROOT/'controller-downloaded').touch()
    self.respond(200,(ROOT/name).read_bytes());return
   raw=self.rfile.read(int(self.headers.get('Content-Length','0')))

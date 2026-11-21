@@ -26,6 +26,7 @@ python3 /workspace/scripts/installer_fixture.py serve >/installer-fixture/contro
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 sleep 1
+printf 'deny-manifests' >/installer-fixture/controller-mode
 # Route only the fixture's public download hostname to its local HTTPS server.
 # The installer still uses its independent public curl invocation, with a
 # redirect to a CDN fixture; no real GitHub request is made in these tests.
@@ -48,6 +49,8 @@ healthy() {
 }
 install_agent /installer-fixture/agent.json > /installer-fixture/first-install.log 2>&1 || { cat /installer-fixture/first-install.log; exit 1; }
 cat /installer-fixture/first-install.log
+[ -f /installer-fixture/public-manifest-downloaded ]
+[ ! -f /installer-fixture/controller-manifest-requested ]
 [ -f /installer-fixture/public-downloaded ]
 [ ! -f /installer-fixture/controller-downloaded ]
 grep -F '[3/7]' /installer-fixture/first-install.log
@@ -65,6 +68,7 @@ healthy
 [ "$(readlink /opt/minging-agent/current)" = "$original" ]
 # A failed public download and a corrupted public asset must both fall back
 # to the authenticated controller and preserve the signed digest check.
+printf 'ok' >/installer-fixture/controller-mode
 printf unavailable >/installer-fixture/public-mode
 install_agent /installer-fixture/agent.json > /installer-fixture/fallback.log 2>&1 || { cat /installer-fixture/fallback.log; exit 1; }
 [ -f /installer-fixture/controller-downloaded ]
