@@ -34,7 +34,6 @@ if [ -n "$host" ]; then
  case "$address" in *:*) resolve_address="[$address]";; *) resolve_address=$address;; esac
 fi
 [ -f "$config" ] && [ ! -L "$config" ] && [ -f "$token_file" ] && [ ! -L "$token_file" ] || { echo 'Private configuration and download-token files required.' >&2; exit 2; }
-chmod 600 "$config" "$token_file"
 token=$(cat "$token_file")
 case "$token" in ''|*[!a-z0-9]*) echo 'Invalid download credential.' >&2; exit 2;; esac
 [ "${#token}" -eq 64 ] || exit 2
@@ -89,7 +88,12 @@ cleanup() {
   if [ "$init" = systemd ]; then systemctl stop minging-agent || true; else rc-service minging-agent stop || true; fi
   if [ -n "$previous" ]; then
    ln -sfn "$previous" "$base/current"
-   if [ -f "$work/old-config" ]; then cp "$work/old-config" /etc/minging-agent/agent.json; chown minging-agent:minging-agent /etc/minging-agent/agent.json; chmod 600 /etc/minging-agent/agent.json; fi
+   if [ -f "$work/old-config" ]; then
+    if ! install_private_file "$work/old-config" /etc/minging-agent/agent.json; then
+     echo 'Previous Agent configuration could not be restored.' >&2
+     exit "$code"
+    fi
+   fi
    if [ -f "$work/old-service" ]; then cp "$work/old-service" "$service_file"; fi
    service_restart || true
    echo 'Installation failed; previous binary and configuration restored.' >&2
@@ -168,9 +172,35 @@ if ! id minging-agent >/dev/null 2>&1; then
  else addgroup -S minging-agent; adduser -S -D -H -s /sbin/nologin -G minging-agent minging-agent; fi
 fi
 [ "$(id -u minging-agent)" != 0 ] || { echo 'Agent must run as a dedicated unprivileged user.' >&2; exit 1; }
-mkdir -p /etc/minging-agent/tls /var/lib/minging-agent
-chown minging-agent:minging-agent /etc/minging-agent /etc/minging-agent/tls /var/lib/minging-agent
-chmod 700 /etc/minging-agent /etc/minging-agent/tls /var/lib/minging-agent
+config_dir=/etc/minging-agent
+config_group=$(id -gn minging-agent)
+secure_config_directory() {
+ [ ! -L "$1" ] || return 1
+ mkdir -p -- "$1" || return 1
+ chown -h "root:$config_group" "$1" && chmod 750 "$1"
+}
+install_private_file() {
+ (
+  staging=$(mktemp -d "${2%/*}/.install.XXXXXXXX") || exit 1
+  trap 'rm -f -- "$staging/file"; rmdir -- "$staging"' EXIT
+  install -m 640 -o root -g "$config_group" -- "$1" "$staging/file" &&
+  mv -fT -- "$staging/file" "$2"
+ )
+}
+secure_config_directory "$config_dir"
+secure_config_directory "$config_dir/tls"
+for file in "$config_dir/agent.json" "$config_dir/tls/default.crt" "$config_dir/tls/default.key"; do
+ [ ! -L "$file" ] || { echo 'Agent configuration and certificates must not be symlinks.' >&2; exit 1; }
+ if [ -e "$file" ]; then
+  [ -f "$file" ] && [ "$(stat -c %h "$file")" = 1 ] || exit 1
+  if [ "$(stat -c '%u:%g:%a' "$file")" != "0:$(id -g minging-agent):640" ]; then
+   install_private_file "$file" "$file"
+  fi
+ fi
+done
+mkdir -p /var/lib/minging-agent
+chown -h minging-agent:minging-agent /var/lib/minging-agent
+chmod 700 /var/lib/minging-agent
 if [ -L "$base/current" ]; then previous=$(readlink "$base/current"); case "$previous" in /opt/minging-agent/releases/*) ;; *) echo 'Unexpected current-release link.' >&2; exit 1;; esac; fi
 if [ "$init" = systemd ]; then service_file=/etc/systemd/system/minging-agent.service; else service_file=/etc/init.d/minging-agent; fi
 if [ -f /etc/minging-agent/agent.json ]; then cp /etc/minging-agent/agent.json "$work/old-config"; fi
@@ -180,10 +210,7 @@ changed=1
 if [ -n "$previous" ]; then
  if [ "$init" = systemd ]; then systemctl stop minging-agent; else rc-service minging-agent stop; fi
 fi
-cp "$config" /etc/minging-agent/agent.json.next
-chown minging-agent:minging-agent /etc/minging-agent/agent.json.next
-chmod 600 /etc/minging-agent/agent.json.next
-mv -f /etc/minging-agent/agent.json.next /etc/minging-agent/agent.json
+install_private_file "$config" "$config_dir/agent.json"
 rm -f /var/lib/minging-agent/health.json
 ln -sfn "$destination" "$base/current.next"
 mv -Tf "$base/current.next" "$base/current"
@@ -210,5 +237,5 @@ done
 }
 stage 7 '安装完成，主控已确认 Agent 在线'
 echo 'Minging Agent installed; controller acknowledgement verified.'
-echo 'Configuration: /etc/minging-agent/agent.json (0600); state: /var/lib/minging-agent.'
+echo 'Configuration: /etc/minging-agent/agent.json (0640); state: /var/lib/minging-agent.'
 echo 'Keep the previous release for rollback. Renew local TLS certificates before expiry.'

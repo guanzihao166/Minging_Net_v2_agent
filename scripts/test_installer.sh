@@ -55,7 +55,9 @@ grep -F '[7/7]' /installer-fixture/first-install.log
 healthy
 original=$(readlink /opt/minging-agent/current)
 config_hash=$(sha256sum /etc/minging-agent/agent.json | cut -d ' ' -f1)
-[ "$(stat -c %a /etc/minging-agent/agent.json)" = 600 ]
+[ "$(stat -c '%U:%G:%a' /etc/minging-agent/agent.json)" = root:minging-agent:640 ]
+[ "$(stat -c '%U:%G:%a' /etc/minging-agent)" = root:minging-agent:750 ]
+[ "$(stat -c '%U:%G:%a' /etc/minging-agent/tls)" = root:minging-agent:750 ]
 [ "$(stat -c %a /var/lib/minging-agent)" = 700 ]
 [ "$(id -u minging-agent)" != 0 ]
 install_agent /installer-fixture/agent.json

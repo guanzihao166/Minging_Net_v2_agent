@@ -37,7 +37,7 @@ REALITY 可选“拒绝未认证回落”（0.3.0）：入站的 target 改为�
 
 支持 amd64 / arm64 静态二进制，systemd（Ubuntu / Debian / CentOS 系）和 OpenRC（Alpine）。依赖 curl、CA 证书、openssl、tar、gzip、sha256sum；缺失时只安装这些基础包。所有协议监听端口至少 1024；WireGuard 使用用户态栈，无需 NET_ADMIN。服务使用 160 MiB Go 内存软目标，systemd 额外设置 240 MiB 上限，可按容量规划调整。
 
-私密配置 `/etc/minging-agent/agent.json` 权限 0600；持久计量、证书与加密快照在 `/var/lib/minging-agent`。本地入站 TLS 证书放入 `/etc/minging-agent/tls/default.crt` 与 `default.key`，由运营方续期并重启服务加载。目录归 minging-agent 所有，权限 0700。
+配置目录 `/etc/minging-agent` 由 root 管理，属组为 minging-agent，权限 0750。配置文件和入站 TLS 文件权限为 0640。入站 TLS 完整证书链及私钥放在 `tls/default.crt` 与 `tls/default.key`，由运营方续期并重启服务加载。持久计量、管理证书与加密快照保存在 Agent 拥有的 `/var/lib/minging-agent` 中，目录权限为 0700。
 
 轮换令牌后重新运行安装命令。不要删除计量目录；旧的流量预留仍须结算。升级前备份配置和状态；正常停机等待在途传输完成持久结算。查看 `systemctl status minging-agent` 或 `rc-service minging-agent status`；使用 `minging-agent --status` 检查最近主控确认。
 
