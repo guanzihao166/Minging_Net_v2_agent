@@ -38,14 +38,19 @@ type Daemon struct {
 
 func Load(path string) (control.Config, error) {
 	var c control.Config
-	info, e := os.Stat(path)
+	file, e := os.Open(path)
 	if e != nil {
 		return c, e
 	}
-	if info.Mode().Perm()&0077 != 0 {
-		return c, errors.New("agent configuration must have mode 0600")
+	defer file.Close()
+	info, e := file.Stat()
+	if e != nil {
+		return c, e
 	}
-	raw, e := os.ReadFile(path)
+	if !info.Mode().IsRegular() || (info.Mode().Perm()&0077 != 0 && !managedConfigMode(info)) {
+		return c, errors.New("agent configuration must be private or root-owned with read-only access for the Agent group")
+	}
+	raw, e := io.ReadAll(file)
 	if e != nil {
 		return c, e
 	}

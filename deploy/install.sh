@@ -89,7 +89,8 @@ cleanup() {
   if [ -n "$previous" ]; then
    ln -sfn "$previous" "$base/current"
    if [ -f "$work/old-config" ]; then
-    if ! install_private_file "$work/old-config" /etc/minging-agent/agent.json; then
+    if ! install_private_file "$work/old-config" /etc/minging-agent/agent.json \
+      "$(stat -c %a "$work/old-config")" "$(stat -c %u "$work/old-config")" "$(stat -c %g "$work/old-config")"; then
      echo 'Previous Agent configuration could not be restored.' >&2
      exit "$code"
     fi
@@ -183,7 +184,7 @@ install_private_file() {
  (
   staging=$(mktemp -d "${2%/*}/.install.XXXXXXXX") || exit 1
   trap 'rm -f -- "$staging/file"; rmdir -- "$staging"' EXIT
-  install -m 640 -o root -g "$config_group" -- "$1" "$staging/file" &&
+  install -m "${3:-640}" -o "${4:-root}" -g "${5:-$config_group}" -- "$1" "$staging/file" &&
   mv -fT -- "$staging/file" "$2"
  )
 }
@@ -193,7 +194,7 @@ for file in "$config_dir/agent.json" "$config_dir/tls/default.crt" "$config_dir/
  [ ! -L "$file" ] || { echo 'Agent configuration and certificates must not be symlinks.' >&2; exit 1; }
  if [ -e "$file" ]; then
   [ -f "$file" ] && [ "$(stat -c %h "$file")" = 1 ] || exit 1
-  if [ "$(stat -c '%u:%g:%a' "$file")" != "0:$(id -g minging-agent):640" ]; then
+  if [ "$file" != "$config_dir/agent.json" ] && [ "$(stat -c '%u:%g:%a' "$file")" != "0:$(id -g minging-agent):640" ]; then
    install_private_file "$file" "$file"
   fi
  fi
@@ -203,7 +204,7 @@ chown -h minging-agent:minging-agent /var/lib/minging-agent
 chmod 700 /var/lib/minging-agent
 if [ -L "$base/current" ]; then previous=$(readlink "$base/current"); case "$previous" in /opt/minging-agent/releases/*) ;; *) echo 'Unexpected current-release link.' >&2; exit 1;; esac; fi
 if [ "$init" = systemd ]; then service_file=/etc/systemd/system/minging-agent.service; else service_file=/etc/init.d/minging-agent; fi
-if [ -f /etc/minging-agent/agent.json ]; then cp /etc/minging-agent/agent.json "$work/old-config"; fi
+if [ -f /etc/minging-agent/agent.json ]; then cp -p /etc/minging-agent/agent.json "$work/old-config"; fi
 if [ -f "$service_file" ]; then cp "$service_file" "$work/old-service"; fi
 stage 5 '安装服务并启动 Agent'
 changed=1
